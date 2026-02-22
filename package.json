@@ -1,5 +1,5 @@
 {
-  "name": "email-mcp-server",
+  "name": "outbound-mcp",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -8,11 +8,15 @@
     "start": "next start"
   },
   "dependencies": {
+    "imapflow": "^1.2.10",
+    "mailparser": "^3.9.3",
+    "mcp-handler": "^1.0.7",
     "next": "16.1.6",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
   "devDependencies": {
+    "@types/mailparser": "^3.4.6",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
