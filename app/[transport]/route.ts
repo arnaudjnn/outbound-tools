@@ -5,10 +5,10 @@ const handler = createMcpHandler(
   (server) => {
     registerTools(server);
   },
+  {},
   {
-    capabilities: {
-      tools: {},
-    },
+    basePath: "/",
+    maxDuration: 60,
   }
 );
 

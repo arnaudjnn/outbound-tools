@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: 1.25.2
+        version: 1.25.2(hono@4.12.1)(zod@3.25.76)
       imapflow:
         specifier: ^1.2.10
         version: 1.2.10
@@ -16,7 +19,7 @@ importers:
         version: 3.9.3
       mcp-handler:
         specifier: ^1.0.7
-        version: 1.0.7(@modelcontextprotocol/sdk@1.25.2(hono@4.12.1)(zod@4.3.6))(next@16.1.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3))
+        version: 1.0.7(@modelcontextprotocol/sdk@1.25.2(hono@4.12.1)(zod@3.25.76))(next@16.1.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3))
       next:
         specifier: 16.1.6
         version: 16.1.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -26,6 +29,9 @@ importers:
       react-dom:
         specifier: 19.2.3
         version: 19.2.3(react@19.2.3)
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
     devDependencies:
       '@types/mailparser':
         specifier: ^3.4.6
@@ -926,8 +932,8 @@ packages:
     peerDependencies:
       zod: ^3.25 || ^4
 
-  zod@4.3.6:
-    resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
 snapshots:
 
@@ -1037,7 +1043,7 @@ snapshots:
   '@img/sharp-win32-x64@0.34.5':
     optional: true
 
-  '@modelcontextprotocol/sdk@1.25.2(hono@4.12.1)(zod@4.3.6)':
+  '@modelcontextprotocol/sdk@1.25.2(hono@4.12.1)(zod@3.25.76)':
     dependencies:
       '@hono/node-server': 1.19.9(hono@4.12.1)
       ajv: 8.18.0
@@ -1053,8 +1059,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.3.6
-      zod-to-json-schema: 3.25.1(zod@4.3.6)
+      zod: 3.25.76
+      zod-to-json-schema: 3.25.1(zod@3.25.76)
     transitivePeerDependencies:
       - hono
       - supports-color
@@ -1464,9 +1470,9 @@ snapshots:
 
   math-intrinsics@1.1.0: {}
 
-  mcp-handler@1.0.7(@modelcontextprotocol/sdk@1.25.2(hono@4.12.1)(zod@4.3.6))(next@16.1.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3)):
+  mcp-handler@1.0.7(@modelcontextprotocol/sdk@1.25.2(hono@4.12.1)(zod@3.25.76))(next@16.1.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3)):
     dependencies:
-      '@modelcontextprotocol/sdk': 1.25.2(hono@4.12.1)(zod@4.3.6)
+      '@modelcontextprotocol/sdk': 1.25.2(hono@4.12.1)(zod@3.25.76)
       chalk: 5.6.2
       commander: 11.1.0
       redis: 4.7.1
@@ -1790,8 +1796,8 @@ snapshots:
 
   yallist@4.0.0: {}
 
-  zod-to-json-schema@3.25.1(zod@4.3.6):
+  zod-to-json-schema@3.25.1(zod@3.25.76):
     dependencies:
-      zod: 4.3.6
+      zod: 3.25.76
 
-  zod@4.3.6: {}
+  zod@3.25.76: {}
