@@ -1,67 +1,73 @@
+export interface DomainOwner {
+  id: number;
+  company: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  streetAddress1: string;
+  streetAddress2: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;
+}
+
+export interface Domain {
+  id: number;
+  createdAt: string;
+  expireAt: string;
+  domain: string;
+  domainOwner: DomainOwner;
+  redirectUrl: string;
+  type: string;
+  status: string;
+}
+
+/** Lightweight mailbox info returned by the list endpoint. */
 export interface Mailbox {
-  id: string;
+  id: number;
   email: string;
   firstName: string;
   lastName: string;
   status: string;
-  domain: { domain: string };
-  password: string;
-  imapHost: string;
-  imapPort: number;
-  imapUsername: string;
-  imapPassword: string;
-  type?: string;
+  domain: Domain;
 }
 
-// TODO: Switch to API key auth when Mailpool support confirms the correct format.
-// The official docs say:
-//   GET https://app.mailpool.io/v1/api/mailboxes
-//   Header: X-Api-Authorization: <numeric_api_key>
-// Our API key (MAILPOOL_API_KEY) is a UUID which returns 400 "numeric string expected".
-// For now, we use session-based auth (Bearer token + cookie) via the .ai domain.
+/** Full mailbox details returned by the single-mailbox endpoint, includes IMAP/SMTP credentials. */
+export interface MailboxDetails extends Mailbox {
+  signature: string;
+  forwardTo: string;
+  password: string;
+  avatar: string;
+  imapHost: string;
+  imapPort: number;
+  imapTLS: boolean;
+  imapUsername: string;
+  imapPassword: string;
+  smtpHost: string;
+  smtpPort: number;
+  smtpTLS: boolean;
+  smtpUsername: string;
+  smtpPassword: string;
+  type: string;
+  isAdmin: boolean;
+}
 
-// --- Future API key auth ---
-// const API_BASE = "https://app.mailpool.io/v1/api";
-//
-// function getHeaders(): Record<string, string> {
-//   const apiKey = process.env.MAILPOOL_API_KEY;
-//   if (!apiKey) throw new Error("MAILPOOL_API_KEY is not set");
-//   return {
-//     "X-Api-Authorization": apiKey,
-//     Accept: "application/json",
-//   };
-// }
-
-// --- Current session-based auth ---
-const API_BASE = "https://app.mailpool.ai/v1";
+const API_BASE = "https://app.mailpool.io/v1/api";
 
 function getHeaders(): Record<string, string> {
-  const token = process.env.MAILPOOL_TOKEN;
-  const cookie = process.env.MAILPOOL_COOKIE;
-  if (!token && !cookie) {
-    throw new Error("MAILPOOL_TOKEN or MAILPOOL_COOKIE must be set");
-  }
-
-  const headers: Record<string, string> = {
-    "x-workspaceid": process.env.MAILPOOL_WORKSPACE_ID || "969",
+  const apiKey = process.env.MAILPOOL_API_KEY;
+  if (!apiKey) throw new Error("MAILPOOL_API_KEY is not set");
+  return {
+    "X-Api-Authorization": apiKey,
     Accept: "application/json",
   };
-
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-  if (cookie) {
-    headers["Cookie"] = cookie;
-  }
-
-  return headers;
 }
 
 export async function listMailboxes(): Promise<Mailbox[]> {
-  const res = await fetch(
-    `${API_BASE}/mailboxes/by-domain/Private?limit=50&offset=0&search=`,
-    { headers: getHeaders() }
-  );
+  const res = await fetch(`${API_BASE}/mailboxes?limit=50&offset=0`, {
+    headers: getHeaders(),
+  });
   if (!res.ok) {
     throw new Error(`Mailpool API error: ${res.status} ${res.statusText}`);
   }
@@ -69,7 +75,19 @@ export async function listMailboxes(): Promise<Mailbox[]> {
   return json.data;
 }
 
-export async function getMailboxByEmail(email: string): Promise<Mailbox> {
+export async function getMailboxById(id: number): Promise<MailboxDetails> {
+  const res = await fetch(`${API_BASE}/mailboxes/${id}`, {
+    headers: getHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(`Mailpool API error: ${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function getMailboxByEmail(
+  email: string
+): Promise<MailboxDetails> {
   const mailboxes = await listMailboxes();
   const mailbox = mailboxes.find(
     (m) => m.email.toLowerCase() === email.toLowerCase()
@@ -77,5 +95,5 @@ export async function getMailboxByEmail(email: string): Promise<Mailbox> {
   if (!mailbox) {
     throw new Error(`Mailbox not found for email: ${email}`);
   }
-  return mailbox;
+  return getMailboxById(mailbox.id);
 }

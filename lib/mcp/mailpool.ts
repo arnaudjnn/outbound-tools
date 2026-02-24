@@ -24,14 +24,7 @@ export function registerMailpoolTools(server: McpServer) {
     { email: z.string(), limit: z.number().optional().default(20) },
     async ({ email, limit }) => {
       const mailbox = await getMailboxByEmail(email);
-      const emails = await fetchEmails(
-        mailbox.imapUsername,
-        mailbox.imapPassword,
-        "INBOX",
-        limit,
-        mailbox.imapHost,
-        mailbox.imapPort
-      );
+      const emails = await fetchEmails(mailbox, "INBOX", limit);
       return {
         content: [{ type: "text", text: JSON.stringify(emails, null, 2) }],
       };
@@ -43,13 +36,7 @@ export function registerMailpoolTools(server: McpServer) {
     { email: z.string(), limit: z.number().optional().default(20) },
     async ({ email, limit }) => {
       const mailbox = await getMailboxByEmail(email);
-      const emails = await fetchSentEmails(
-        mailbox.imapUsername,
-        mailbox.imapPassword,
-        limit,
-        mailbox.imapHost,
-        mailbox.imapPort
-      );
+      const emails = await fetchSentEmails(mailbox, limit);
       return {
         content: [{ type: "text", text: JSON.stringify(emails, null, 2) }],
       };

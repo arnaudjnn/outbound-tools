@@ -1,5 +1,16 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import type { MailboxDetails } from "@/lib/mailpool";
+
+function createImapClient(mailbox: MailboxDetails): ImapFlow {
+  return new ImapFlow({
+    host: mailbox.imapHost,
+    port: mailbox.imapPort,
+    secure: mailbox.imapTLS,
+    auth: { user: mailbox.imapUsername, pass: mailbox.imapPassword },
+    logger: false,
+  });
+}
 
 // Finds the Sent folder by looking for the \Sent special-use flag on the IMAP server.
 // Falls back to host-based naming convention if not found.
@@ -30,19 +41,9 @@ export interface EmailMessage {
 }
 
 export async function listFolders(
-  email: string,
-  password: string,
-  host?: string,
-  port?: number
+  mailbox: MailboxDetails
 ): Promise<string[]> {
-  const client = new ImapFlow({
-    host: host || process.env.IMAP_HOST || "imap.mailpool.io",
-    port: port || Number(process.env.IMAP_PORT) || 993,
-    secure: true,
-    auth: { user: email, pass: password },
-    logger: false,
-  });
-
+  const client = createImapClient(mailbox);
   try {
     await client.connect();
     const list = await client.list();
@@ -53,20 +54,11 @@ export async function listFolders(
 }
 
 export async function fetchEmails(
-  email: string,
-  password: string,
+  mailbox: MailboxDetails,
   folder: string,
-  limit: number,
-  host?: string,
-  port?: number
+  limit: number
 ): Promise<EmailMessage[]> {
-  const client = new ImapFlow({
-    host: host || process.env.IMAP_HOST || "imap.mailpool.io",
-    port: port || Number(process.env.IMAP_PORT) || 993,
-    secure: true,
-    auth: { user: email, pass: password },
-    logger: false,
-  });
+  const client = createImapClient(mailbox);
 
   try {
     await client.connect();
@@ -74,8 +66,8 @@ export async function fetchEmails(
 
     try {
       const messages: EmailMessage[] = [];
-      const mailbox = client.mailbox;
-      const totalMessages = mailbox && typeof mailbox === "object" ? mailbox.exists : 0;
+      const mb = client.mailbox;
+      const totalMessages = mb && typeof mb === "object" ? mb.exists : 0;
 
       if (totalMessages === 0) return [];
 
@@ -113,31 +105,21 @@ export async function fetchEmails(
 // Auto-discovers the correct Sent folder via IMAP special-use flags,
 // then fetches sent emails. Works across Gmail, Microsoft, Mailpool, etc.
 export async function fetchSentEmails(
-  email: string,
-  password: string,
-  limit: number,
-  host?: string,
-  port?: number
+  mailbox: MailboxDetails,
+  limit: number
 ): Promise<EmailMessage[]> {
-  const imapHost = host || process.env.IMAP_HOST || "imap.mailpool.io";
-  const client = new ImapFlow({
-    host: imapHost,
-    port: port || Number(process.env.IMAP_PORT) || 993,
-    secure: true,
-    auth: { user: email, pass: password },
-    logger: false,
-  });
+  const client = createImapClient(mailbox);
 
   try {
     await client.connect();
-    const sentFolder = await findSentFolder(client, imapHost);
+    const sentFolder = await findSentFolder(client, mailbox.imapHost);
     const lock = await client.getMailboxLock(sentFolder);
 
     try {
       const messages: EmailMessage[] = [];
-      const mailbox = client.mailbox;
+      const mb = client.mailbox;
       const totalMessages =
-        mailbox && typeof mailbox === "object" ? mailbox.exists : 0;
+        mb && typeof mb === "object" ? mb.exists : 0;
 
       if (totalMessages === 0) return [];
 
