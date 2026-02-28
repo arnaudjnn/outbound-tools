@@ -1,0 +1,25 @@
+name: Classify Replies
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - name: Start MCP server and classify replies
+        env:
+          MAILPOOL_API_KEY: ${{ secrets.MAILPOOL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          npx claude --print --allowedTools "mcp__outbound-tools__list_email_accounts,mcp__outbound-tools__find_reply_threads,mcp__outbound-tools__add_email_tag,mcp__outbound-tools__remove_email_tag" "/classify-replies"
