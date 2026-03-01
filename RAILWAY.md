@@ -17,6 +17,14 @@ Deploying Outbound Tools gives you a hosted server that connects to your Mailpoo
 - Node.js 20+
 - A Mailpool account with at least one connected email address
 
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `MAILPOOL_API_KEY` | Yes | Your Mailpool API key from [mailpool.com](https://mailpool.com) |
+| `API_KEY` | Yes | Secures the MCP endpoint. Auto-generated on Railway via `${{secret()}}` |
+| `ANTHROPIC_API_KEY` | No | Enables automatic reply classification via `/api/classify`. Without it, replies are classified manually using the agent skill. |
+
 ### Deployment Dependencies
 
 - [Mailpool](https://mailpool.com) for email account management and IMAP/SMTP credentials

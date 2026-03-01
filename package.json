@@ -8,6 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
     "@modelcontextprotocol/sdk": "1.25.2",
     "imapflow": "^1.2.10",
     "mailparser": "^3.9.3",

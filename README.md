@@ -17,7 +17,10 @@ MCP server for managing email outreach. Connects to Mailpool for mailbox managem
 {
   "mcpServers": {
     "outbound-tools": {
-      "url": "https://your-app.up.railway.app/mcp"
+      "url": "https://your-app.up.railway.app/mcp",
+      "headers": {
+        "Authorization": "Bearer your-api-key"
+      }
     }
   }
 }
@@ -35,7 +38,13 @@ Outbound Tools uses **IMAP keywords** as a native tagging and classification lay
 - **No state to manage.** The `classified` keyword makes processing incremental. Each run only touches new emails, then marks them done. No cursor, no offset table, no checkpoint file.
 - **Works at scale.** Each account is independent. Add 10 or 1,000 mailboxes and the architecture stays the same. IMAP handles the storage and indexing.
 
-The classification itself runs as a Claude Code skill (`/classify-replies`), scheduled via GitHub Actions every 30 minutes. It uses `find_reply_threads` to deterministically match replies to sent emails by subject and sender, then Claude classifies the sentiment. Both the reply and the original sent email get tagged, so you can query from either side.
+### Auto-Classification
+
+If `ANTHROPIC_API_KEY` is set as an environment variable, the server exposes a `GET /api/classify` endpoint that automatically classifies replies using Claude Haiku. Set up a Railway cron or external scheduler to hit it periodically (e.g., daily).
+
+If `ANTHROPIC_API_KEY` is not set, the endpoint returns 501 and you can classify manually using the `/classify-replies` agent skill.
+
+Classification uses `find_reply_threads` to deterministically match replies to sent emails by subject and sender, then Claude classifies the sentiment. Both the reply and the original sent email get tagged, so you can query from either side.
 
 ### Tags
 
@@ -96,3 +105,11 @@ List all audience segments with contacts. Scans all mailbox accounts and returns
 
 ### `list_metrics`
 Get bounce, complain, and interest rates for an email account. Counts tagged sent emails via IMAP SEARCH and returns rates as percentages of total sent.
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `MAILPOOL_API_KEY` | Yes | Your Mailpool API key for email account access |
+| `API_KEY` | Yes | Secures the MCP server and `/api/classify` endpoint. Auto-generated on Railway via `${{secret()}}`. Pass as `Authorization: Bearer <key>` header or `?api_key=<key>` query param. |
+| `ANTHROPIC_API_KEY` | No | Enables auto-classification via `GET /api/classify`. Only needed if you want the server to classify replies automatically. Without it, use the `/classify-replies` agent skill instead. |

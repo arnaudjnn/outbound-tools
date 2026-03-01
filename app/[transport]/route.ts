@@ -1,5 +1,6 @@
 import { createMcpHandler } from "mcp-handler";
 import { registerTools } from "@/lib/mcp";
+import { checkApiKey } from "@/lib/auth";
 
 const handler = createMcpHandler(
   (server) => {
@@ -12,4 +13,10 @@ const handler = createMcpHandler(
   }
 );
 
-export { handler as GET, handler as POST };
+async function authedHandler(request: Request) {
+  const denied = checkApiKey(request);
+  if (denied) return denied;
+  return handler(request);
+}
+
+export { authedHandler as GET, authedHandler as POST };
