@@ -1,9 +1,27 @@
 <img width="495" height="187" alt="Frame 6" src="https://github.com/user-attachments/assets/84f958cc-5d83-479f-a5d3-a7ba447e7be2" />
 
-
 # Outbound Tools
 
 MCP server for managing email outreach. Connects to Mailpool for mailbox management and uses IMAP/SMTP for sending and reading emails.
+
+## Get Started
+
+1. Get a `MAILPOOL_API_KEY` from [Mailpool](https://mailpool.com) and connect at least one email account
+2. Deploy to Railway:
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/outbound-tools?utm_medium=integration&utm_source=template&utm_campaign=generic)
+
+3. Copy your Railway public URL and add it as an MCP server in your `.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "outbound-tools": {
+      "url": "https://your-app.up.railway.app/mcp"
+    }
+  }
+}
+```
 
 ## How It Works
 
