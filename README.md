@@ -40,6 +40,9 @@ The classify-replies skill uses these IMAP keyword tags:
 | `unsubscribed` | Asked to stop receiving emails |
 | `bounced` | Delivery failure / bounce notification |
 
+### `list_metrics`
+Get bounce, complain, and interest rates for an email account. Counts tagged sent emails via IMAP SEARCH and returns rates as percentages of total sent.
+
 ### `find_reply_threads`
 Find received emails that are replies to sent emails. Matches by normalized subject and sender/recipient overlap. Returns matched pairs (with both sent and received email details) and unmatched UIDs. Filters to unclassified emails by default.
 

@@ -445,6 +445,27 @@ export async function removeEmailFlag(
   }
 }
 
+// Counts emails in a folder that have a given IMAP keyword via SEARCH.
+export async function countByKeyword(
+  mailbox: MailboxDetails,
+  folder: string,
+  keyword: string
+): Promise<number> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock(folder);
+    try {
+      const result = await client.search({ keyword }, { uid: true });
+      return result === false ? 0 : result.length;
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
 // Fetches emails from a folder that do NOT have the `classified` keyword.
 export async function fetchUnclassifiedEmails(
   mailbox: MailboxDetails,

@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { listMailboxes, getMailboxByEmail } from "@/lib/mailpool";
-import { fetchEmails, fetchSentEmails, appendToSent, setEmailFlag, removeEmailFlag, matchRepliesToSent, filterByTagExpression, resolveFolder } from "@/lib/imap";
+import { fetchEmails, fetchSentEmails, appendToSent, setEmailFlag, removeEmailFlag, matchRepliesToSent, filterByTagExpression, resolveFolder, countByKeyword } from "@/lib/imap";
 import { sendEmail } from "@/lib/smtp";
 
 export function registerMailpoolTools(server: McpServer) {
@@ -154,6 +154,76 @@ export function registerMailpoolTools(server: McpServer) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: "text", text: `Failed to find threads: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "list_metrics",
+    {
+      email: z.string().describe("Email account to get metrics for"),
+    },
+    async ({ email }) => {
+      const mailbox = await getMailboxByEmail(email);
+      try {
+        const sentPage = await fetchSentEmails(mailbox, 1);
+        const totalSent = sentPage.total;
+
+        if (totalSent === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  totalSent: 0,
+                  bounced: 0,
+                  complained: 0,
+                  interested: 0,
+                  bounce_rate: 0,
+                  complain_rate: 0,
+                  interest_rate: 0,
+                }, null, 2),
+              },
+            ],
+          };
+        }
+
+        const sentFolder = await resolveFolder(mailbox, "SENT");
+        const [bounced, complained, interested] = await Promise.all([
+          countByKeyword(mailbox, sentFolder, "bounced"),
+          countByKeyword(mailbox, sentFolder, "complained"),
+          countByKeyword(mailbox, sentFolder, "interested"),
+        ]);
+
+        const rate = (count: number) =>
+          Math.round((count / totalSent) * 10000) / 100;
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  totalSent,
+                  bounced,
+                  complained,
+                  interested,
+                  bounce_rate: rate(bounced),
+                  complain_rate: rate(complained),
+                  interest_rate: rate(interested),
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Failed to get metrics: ${errorMessage}` }],
           isError: true,
         };
       }
