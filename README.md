@@ -1,3 +1,6 @@
+<img width="495" height="187" alt="Frame 6" src="https://github.com/user-attachments/assets/84f958cc-5d83-479f-a5d3-a7ba447e7be2" />
+
+
 # Outbound Tools
 
 MCP server for managing email outreach. Connects to Mailpool for mailbox management and uses IMAP/SMTP for sending and reading emails.
