@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { listMailboxes, getMailboxByEmail } from "@/lib/mailpool";
-import { fetchEmails, fetchSentEmails, appendToSent, setEmailFlag, removeEmailFlag, matchRepliesToSent, filterByTagExpression, resolveFolder, countByKeyword } from "@/lib/imap";
+import { listMailboxes, getMailboxByEmail, getMailboxById } from "@/lib/mailpool";
+import { fetchEmails, fetchSentEmails, appendToSent, setEmailFlag, removeEmailFlag, matchRepliesToSent, filterByTagExpression, resolveFolder, countByKeyword, addAudienceSegments, removeAudienceSegments, listAudienceSegments } from "@/lib/imap";
 import { sendEmail } from "@/lib/smtp";
 
 export function registerMailpoolTools(server: McpServer) {
@@ -280,6 +280,108 @@ export function registerMailpoolTools(server: McpServer) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: "text", text: `Failed to remove tag: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "add_to_audience",
+    {
+      email: z.string().describe("Contact email to segment (e.g. the person you send to or receive from)"),
+      segments: z.array(z.string()).optional().default(["general"]).describe("Audience segments to add (e.g. ['employee', 'vip'])"),
+    },
+    async ({ email, segments }) => {
+      try {
+        const mailboxes = await listMailboxes();
+        let totalTagged = 0;
+        for (const mb of mailboxes) {
+          const details = await getMailboxById(mb.id);
+          for (const folder of ["INBOX", "SENT"] as const) {
+            totalTagged += await addAudienceSegments(details, folder, email, segments);
+          }
+        }
+        return {
+          content: [
+            { type: "text", text: `Added segments [${segments.join(", ")}] to ${email}. Tagged ${totalTagged} messages across ${mailboxes.length} accounts.` },
+          ],
+        };
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Failed to add audience segments: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "remove_from_audience",
+    {
+      email: z.string().describe("Contact email to remove from segments"),
+      segments: z.array(z.string()).describe("Audience segments to remove"),
+    },
+    async ({ email, segments }) => {
+      try {
+        const mailboxes = await listMailboxes();
+        let totalUntagged = 0;
+        for (const mb of mailboxes) {
+          const details = await getMailboxById(mb.id);
+          for (const folder of ["INBOX", "SENT"] as const) {
+            totalUntagged += await removeAudienceSegments(details, folder, email, segments);
+          }
+        }
+        return {
+          content: [
+            { type: "text", text: `Removed segments [${segments.join(", ")}] from ${email}. Untagged ${totalUntagged} messages across ${mailboxes.length} accounts.` },
+          ],
+        };
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Failed to remove audience segments: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "list_audiences",
+    {},
+    async () => {
+      try {
+        const mailboxes = await listMailboxes();
+        const mergedSegments = new Map<string, Set<string>>();
+
+        for (const mb of mailboxes) {
+          const details = await getMailboxById(mb.id);
+          for (const folder of ["INBOX", "SENT"] as const) {
+            const segments = await listAudienceSegments(details, folder);
+            for (const seg of segments) {
+              if (!mergedSegments.has(seg.name)) mergedSegments.set(seg.name, new Set());
+              for (const contact of seg.contacts) {
+                mergedSegments.get(seg.name)!.add(contact);
+              }
+            }
+          }
+        }
+
+        const segments = Array.from(mergedSegments.entries()).map(([name, contacts]) => ({
+          name,
+          count: contacts.size,
+          contacts: Array.from(contacts),
+        }));
+
+        return {
+          content: [{ type: "text", text: JSON.stringify({ segments }, null, 2) }],
+        };
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Failed to list audiences: ${errorMessage}` }],
           isError: true,
         };
       }

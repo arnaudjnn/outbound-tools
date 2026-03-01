@@ -64,5 +64,14 @@ Add an IMAP keyword to a message. Parameters: `email` (account), `uid` (message 
 ### `remove_email_tag`
 Remove an IMAP keyword from a message. Parameters: `email` (account), `uid` (message UID), `tag` (keyword), `folder` (INBOX or SENT, default INBOX).
 
+### `add_to_audience`
+Add a contact to one or more audience segments. Searches all mailbox accounts for messages from/to that contact and tags them. Parameters: `email` (contact email), `segments` (array, default `["general"]`). Stores segments as `audience_` prefixed IMAP keywords.
+
+### `remove_from_audience`
+Remove a contact from one or more audience segments. Parameters: `email` (contact email), `segments` (array). Removes tags across all mailbox accounts.
+
+### `list_audiences`
+List all audience segments with contacts. Scans all mailbox accounts and returns unique contacts per segment. Returns `{ segments: [{ name, count, contacts }] }`.
+
 ### `list_metrics`
 Get bounce, complain, and interest rates for an email account. Counts tagged sent emails via IMAP SEARCH and returns rates as percentages of total sent.

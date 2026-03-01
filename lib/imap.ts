@@ -466,6 +466,121 @@ export async function countByKeyword(
   }
 }
 
+const AUDIENCE_PREFIX = "audience_";
+
+// Adds audience segment keywords to all messages from/to a contact in a folder.
+// Searches by FROM in INBOX, by TO in Sent folders. Returns number of tagged messages.
+export async function addAudienceSegments(
+  mailbox: MailboxDetails,
+  folder: string,
+  contactEmail: string,
+  segments: string[]
+): Promise<number> {
+  const flags = segments.map((s) => `${AUDIENCE_PREFIX}${s}`);
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const isSent = folder !== "INBOX";
+    const resolvedFolder = isSent ? await findSentFolder(client, mailbox.imapHost) : folder;
+    const lock = await client.getMailboxLock(resolvedFolder);
+    try {
+      const criteria = isSent ? { to: contactEmail } : { from: contactEmail };
+      const uids = await client.search(criteria, { uid: true });
+      if (!uids || uids.length === 0) return 0;
+      await client.messageFlagsAdd(uids, flags, { uid: true });
+      return uids.length;
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+// Removes audience segment keywords from all messages from/to a contact in a folder.
+// Searches by FROM in INBOX, by TO in Sent folders. Returns number of untagged messages.
+export async function removeAudienceSegments(
+  mailbox: MailboxDetails,
+  folder: string,
+  contactEmail: string,
+  segments: string[]
+): Promise<number> {
+  const flags = segments.map((s) => `${AUDIENCE_PREFIX}${s}`);
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const isSent = folder !== "INBOX";
+    const resolvedFolder = isSent ? await findSentFolder(client, mailbox.imapHost) : folder;
+    const lock = await client.getMailboxLock(resolvedFolder);
+    try {
+      const criteria = isSent ? { to: contactEmail } : { from: contactEmail };
+      const uids = await client.search(criteria, { uid: true });
+      if (!uids || uids.length === 0) return 0;
+      await client.messageFlagsRemove(uids, flags, { uid: true });
+      return uids.length;
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+export interface AudienceSegment {
+  name: string;
+  contacts: string[];
+}
+
+// Lists audience segments in a folder by scanning flags and envelope (from/to).
+// Returns unique contacts per segment, deduplicated by email address.
+export async function listAudienceSegments(
+  mailbox: MailboxDetails,
+  folder: string
+): Promise<AudienceSegment[]> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const isSent = folder !== "INBOX";
+    const resolvedFolder = isSent ? await findSentFolder(client, mailbox.imapHost) : folder;
+    const lock = await client.getMailboxLock(resolvedFolder);
+    try {
+      const mb = client.mailbox;
+      const totalMessages = mb && typeof mb === "object" ? mb.exists : 0;
+      if (totalMessages === 0) return [];
+
+      const segmentContacts = new Map<string, Set<string>>();
+      for await (const msg of client.fetch("1:*", { flags: true, envelope: true })) {
+        const audienceFlags = Array.from(msg.flags || []).filter((f) => f.startsWith(AUDIENCE_PREFIX));
+        if (audienceFlags.length === 0) continue;
+
+        const addresses = isSent
+          ? (msg.envelope?.to || [])
+          : (msg.envelope?.from || []);
+        const emails = addresses
+          .map((a: { address?: string }) => a.address?.toLowerCase())
+          .filter(Boolean) as string[];
+
+        for (const flag of audienceFlags) {
+          const name = flag.slice(AUDIENCE_PREFIX.length);
+          if (!segmentContacts.has(name)) segmentContacts.set(name, new Set());
+          for (const addr of emails) {
+            segmentContacts.get(name)!.add(addr);
+          }
+        }
+      }
+
+      return Array.from(segmentContacts.entries()).map(([name, contacts]) => ({
+        name,
+        contacts: Array.from(contacts),
+      }));
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
 // Fetches emails from a folder that do NOT have the `classified` keyword.
 export async function fetchUnclassifiedEmails(
   mailbox: MailboxDetails,
