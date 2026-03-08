@@ -6,7 +6,7 @@ MCP server for managing email outreach. Connects to Mailpool for mailbox managem
 
 ## Get Started
 
-1. Get a `MAILPOOL_API_KEY` from [Mailpool](https://mailpool.com) and connect at least one email account
+1. Get a `MAILPOOL_API_KEY` from [Mailpool](https://mailpool.io) and connect at least one email account
 2. Deploy to Railway:
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/outbound-tools?utm_medium=integration&utm_source=template&utm_campaign=generic)

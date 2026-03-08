@@ -21,13 +21,13 @@ Deploying Outbound Tools gives you a hosted server that connects to your Mailpoo
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MAILPOOL_API_KEY` | Yes | Your Mailpool API key from [mailpool.com](https://mailpool.com) |
+| `MAILPOOL_API_KEY` | Yes | Your Mailpool API key from [mailpool.io](https://mailpool.io) |
 | `API_KEY` | Yes | Secures the MCP endpoint. Auto-generated on Railway via `${{secret()}}` |
 | `ANTHROPIC_API_KEY` | No | Enables automatic reply classification via `/api/classify`. Without it, replies are classified manually using the agent skill. |
 
 ### Deployment Dependencies
 
-- [Mailpool](https://mailpool.com) for email account management and IMAP/SMTP credentials
+- [Mailpool](https://mailpool.io) for email account management and IMAP/SMTP credentials
 
 ## Why Deploy Outbound Tools on Railway?
 
