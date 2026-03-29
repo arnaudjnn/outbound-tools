@@ -190,6 +190,24 @@ Outbound Tools uses **IMAP keywords** as a native tagging and classification lay
 - **No state to manage.** The `classified` keyword makes processing incremental. Each run only touches new emails, then marks them done. No cursor, no offset table, no checkpoint file.
 - **Works at scale.** Each account is independent. Add 10 or 1,000 mailboxes and the architecture stays the same. IMAP handles the storage and indexing.
 
+### IMAP Features
+
+Every feature is built on standard IMAP capabilities — no proprietary extensions, no external database.
+
+| IMAP feature | What we use it for |
+|---|---|
+| **Keywords** (custom flags) | Tags on emails: reply statuses (`interested`, `bounced`, ...), campaign tracking (`campaign_q1`, `step_1`, `variant_a`), audience segments (`audience_vip`), processing state (`classified`). Queryable via IMAP SEARCH. |
+| **SEARCH** | Count emails by keyword for analytics (`get_email_account_analytics`), find unclassified emails, filter by tag expressions. Single command, server-side — no full scan needed. |
+| **APPEND** | Save sent emails to Sent folder, create drafts, store campaign configs as draft messages, create contact marker messages in the Contacts folder. All without SMTP. |
+| **Folder creation** (`CREATE`) | Auto-create `Contacts` folder for contact metadata storage. |
+| **Drafts folder** | Store campaign configs as JSON-body draft messages tagged `campaign_def`. Also used for standard draft management (create, update, send, delete). |
+| **Contacts folder** (custom) | Store contact marker messages with JSON metadata (firstName, lastName, company) and audience flags. Enables cold outreach — contacts exist in the audience before any email is exchanged. |
+| **Envelope** (FROM/TO) | Extract sender/recipient from messages for audience scanning, thread matching, and reply detection — without parsing the full message body. |
+| **Special-use flags** (`\Sent`, `\Drafts`) | Auto-discover Sent and Drafts folders across Gmail, Outlook, Mailpool, and other providers. |
+| **STORE** (flag add/remove) | Add and remove tags on messages: `set_reply_status` ensures one status at a time, `add_email_tag`/`remove_email_tag` for arbitrary tagging. |
+| **EXPUNGE** (`DELETE`) | Delete emails, drafts, and campaign configs. |
+| **Source fetch** | Fetch full RFC822 source for parsing headers (`Message-ID`, `In-Reply-To`, `References`), body, and attachments. Used by `reply_to_email`, `forward_email`, `get_email`, and `get_attachment`. |
+
 ### Reply Statuses
 
 The classifier assigns exactly one status per reply. Use `list_reply_statuses` to see all available statuses.
