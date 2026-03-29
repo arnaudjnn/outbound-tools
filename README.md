@@ -2,7 +2,7 @@
 
 # Outbound Tools
 
-MCP server for managing email outreach. Connects to Mailpool for mailbox management and uses IMAP/SMTP for sending and reading emails.
+Open-source MCP server for email outreach campaigns. Create multi-step sequences with A/B variants, auto-classify replies with AI, and track conversion rates — all powered by IMAP keywords with zero external database.
 
 ## Get Started
 
@@ -26,30 +26,27 @@ MCP server for managing email outreach. Connects to Mailpool for mailbox managem
 }
 ```
 
-## How It Works
-
-Outbound Tools uses **IMAP keywords** as a native tagging and classification layer, directly on the email account itself. No external database, no third-party analytics platform, no syncing pipelines.
-
-**Why this matters:**
-
-- **Zero infrastructure.** Tags like `interested`, `bounced`, `do_not_contact` are stored as IMAP keywords on each message. The mailbox *is* the database.
-- **Instant querying.** IMAP SEARCH natively supports keyword filtering. Fetching all positive replies or computing bounce rates is a single IMAP command, not a full-table scan.
-- **Portable and durable.** Tags live on the mail server. Switch clients, migrate tools, or read from any IMAP client. Your classification data follows the emails.
-- **No state to manage.** The `classified` keyword makes processing incremental. Each run only touches new emails, then marks them done. No cursor, no offset table, no checkpoint file.
-- **Works at scale.** Each account is independent. Add 10 or 1,000 mailboxes and the architecture stays the same. IMAP handles the storage and indexing.
-
 ## Outbound Playbook
 
-A typical outbound campaign in 5 steps:
+### Step 1 — Build your audience
 
-### 1. Enroll contacts in an audience
+Enroll contacts into audience segments. Segments are stored as IMAP keywords (`audience_{name}`) directly on emails, so there's no external database.
 
 ```
 add_to_audience({ email: "john@acme.com", segments: ["q1_launch"] })
 add_to_audience({ email: "jane@corp.io",  segments: ["q1_launch"] })
 ```
 
-### 2. Create a campaign with steps and A/B variants
+You can list all segments and their contacts at any time:
+
+```
+list_audiences()
+→ { segments: [{ name: "q1_launch", count: 2, contacts: ["john@acme.com", "jane@corp.io"] }] }
+```
+
+### Step 2 — Create a campaign
+
+A campaign defines: who to send to, what to send (multi-step sequence with A/B variants), and how to handle replies (skill attachment).
 
 ```
 create_campaign({
@@ -64,8 +61,8 @@ create_campaign({
     {
       step: 1, delay_days: 0,
       variants: [
-        { name: "a", weight: 50, subject: "Quick question {{firstName}}", text: "Hi {{firstName}}, ..." },
-        { name: "b", weight: 50, subject: "{{company}} + us?", text: "Hey {{firstName}}, ..." }
+        { name: "a", weight: 50, subject: "Quick question {{firstName}}", text: "Hi {{firstName}}, I saw {{company}} is..." },
+        { name: "b", weight: 50, subject: "{{company}} + us?", text: "Hey {{firstName}}, we help companies like {{company}}..." }
       ]
     },
     {
@@ -73,75 +70,152 @@ create_campaign({
       variants: [
         { name: "a", weight: 100, subject: "", text: "Just following up on my last email..." }
       ]
+    },
+    {
+      step: 3, delay_days: 5,
+      variants: [
+        { name: "a", weight: 100, subject: "", text: "Last try — would love 15 min to show you..." }
+      ]
     }
   ],
   skill: "classify-replies"
 })
 ```
 
-Step 2 has an empty subject — it replies in the same thread as step 1. Variants with `weight: 50` each get ~50% of contacts for A/B testing.
+**How sequences work:**
+- **Steps** execute in order. `delay_days` is the number of days to wait after the previous step before sending.
+- **Variants** enable A/B testing. Each variant has a `weight` — with two variants at `weight: 50`, each gets ~50% of contacts. Use `weight: 100` for a single variant (no split).
+- **Template variables** — `{{firstName}}`, `{{lastName}}`, `{{email}}`, `{{company}}` are replaced with each contact's data.
+- **Empty subject on step 2+** means "reply in the same thread" — the email is sent as a reply to the step 1 email with proper `In-Reply-To` and `References` headers, so it threads correctly in the recipient's inbox.
+- **Skill attachment** — the `skill` field references a skill (like `classify-replies`) that should be run to handle incoming replies. This is a convention for the agent orchestrating the campaign.
 
-### 3. Start the campaign
+The campaign config is stored as an IMAP draft on the sender account — no external storage.
+
+### Step 3 — Run the campaign
 
 ```
 start_campaign({ email: "me@mycompany.com", campaign: "q1_launch" })
 ```
 
-Call `start_campaign` repeatedly (e.g. daily via cron). Each run:
-- Sends the next step to contacts whose delay has elapsed
-- Skips contacts who replied with a terminal status (`do_not_contact`, `unsubscribed`, `bounced`, `not_interested`, `wrong_person`)
-- Skips contacts who already completed all steps
+Each call to `start_campaign` processes every contact and determines what to do:
 
-### 4. Classify replies
+| Contact state | Action |
+|---|---|
+| Never sent to | Send step 1 |
+| Received step 1, 3+ days ago | Send step 2 |
+| Received step 2, 5+ days ago | Send step 3 |
+| Received step 2, only 2 days ago | Skip — delay not elapsed |
+| Completed all steps | Skip |
+| Replied with `do_not_contact`, `unsubscribed`, `bounced`, `not_interested`, or `wrong_person` | Skip — terminal status |
 
-Run the `/classify-replies` skill or hit `GET /api/classify` to auto-classify incoming replies into statuses like `interested`, `meeting_request`, `not_interested`, etc.
+**Scheduling:** `start_campaign` is idempotent — call it as often as you want. Set up a daily cron (via Railway cron, a scheduler, or the Claude Code `/schedule` command) to call it automatically. Each run only sends what's due.
 
-### 5. Report on results
+Every sent email is automatically tagged with:
+- `campaign_{name}` — marks it as part of this campaign
+- `step_{n}` — which step was sent
+- `variant_{name}` — which A/B variant was used
+
+### Step 4 — Auto-classify replies
+
+Replies need to be classified so `start_campaign` knows when to stop sending (terminal statuses) and so you can measure conversion.
+
+**Option A: Automatic (recommended)**
+
+Set `ANTHROPIC_API_KEY` as an environment variable. The server exposes `GET /api/classify` which uses Claude Haiku to classify every unprocessed reply. Schedule it daily alongside `start_campaign`.
+
+How it works:
+1. Calls `list_threads` to match incoming replies to sent emails by subject and sender
+2. Sends each reply to Claude Haiku for classification into one of 9 statuses
+3. Tags both the reply (INBOX) and the original sent email (SENT) with the status + `classified`
+4. Next time `start_campaign` runs, it sees the tagged status and skips contacts with terminal statuses
+
+**Option B: Manual / agent-driven**
+
+Run the `/classify-replies` skill in Claude Code. The agent reads each reply, classifies it, and calls `set_reply_status` to tag the emails.
+
+**Option C: Per-reply**
+
+Call `set_reply_status` directly for individual replies:
+
+```
+set_reply_status({ email: "me@mycompany.com", uid: 42, status: "meeting_request", sent_uid: 15 })
+```
+
+This tags both the reply and the matching sent email, removing any previous status first (only one status per reply).
+
+### Step 5 — Measure results
 
 ```
 campaign_analytics({ email: "me@mycompany.com", campaign: "q1_launch" })
 ```
 
-Returns: total sent, reply rate, status breakdown (interested, meeting_request, bounced...), per-step performance, and per-variant A/B comparison to see which variant wins.
+Returns:
 
-### Auto-Classification
+```json
+{
+  "campaign": "q1_launch",
+  "totalSent": 6,
+  "uniqueContacts": 2,
+  "totalReplied": 2,
+  "replyRate": 33.33,
+  "statuses": { "interested": 1, "meeting_request": 1 },
+  "statusRates": { "interested": 16.67, "meeting_request": 16.67 },
+  "steps": {
+    "step_1": { "sent": 2, "variants": { "variant_a": 1, "variant_b": 1 } },
+    "step_2": { "sent": 2, "variants": { "variant_a": 2 } },
+    "step_3": { "sent": 2, "variants": { "variant_a": 2 } }
+  },
+  "variants": {
+    "variant_a": { "sent": 5, "interested": 1 },
+    "variant_b": { "sent": 1, "meeting_request": 1 }
+  }
+}
+```
 
-If `ANTHROPIC_API_KEY` is set as an environment variable, the server exposes a `GET /api/classify` endpoint that automatically classifies replies using Claude Haiku. Set up a Railway cron or external scheduler to hit it periodically (e.g., daily).
+**Key metrics:**
+- **Reply rate** — % of sent emails that got a classified reply
+- **Positive reply rate** — `interested` + `meeting_request` + `information_request` as % of sent
+- **Conversion rate** — `meeting_request` as % of sent (meetings booked)
+- **Per-step performance** — see which step generates the most replies
+- **A/B comparison** — compare variants by reply count and status breakdown to pick the winner
 
-If `ANTHROPIC_API_KEY` is not set, the endpoint returns 501 and you can classify manually using the `/classify-replies` agent skill.
+For per-account analytics (across all campaigns):
 
-Classification uses `list_threads` to deterministically match replies to sent emails by subject and sender, then Claude classifies the sentiment. Both the reply and the original sent email get tagged, so you can query from either side.
+```
+email_account_analytics({ email: "me@mycompany.com" })
+```
+
+## How It Works
+
+Outbound Tools uses **IMAP keywords** as a native tagging and classification layer, directly on the email account itself. No external database, no third-party analytics platform, no syncing pipelines.
+
+- **Zero infrastructure.** Tags like `interested`, `bounced`, `do_not_contact` are stored as IMAP keywords on each message. Campaign configs are stored as IMAP drafts. The mailbox *is* the database.
+- **Instant querying.** IMAP SEARCH natively supports keyword filtering. Fetching all positive replies or computing bounce rates is a single IMAP command, not a full-table scan.
+- **Portable and durable.** Tags live on the mail server. Switch clients, migrate tools, or read from any IMAP client. Your classification data follows the emails.
+- **No state to manage.** The `classified` keyword makes processing incremental. Each run only touches new emails, then marks them done. No cursor, no offset table, no checkpoint file.
+- **Works at scale.** Each account is independent. Add 10 or 1,000 mailboxes and the architecture stays the same. IMAP handles the storage and indexing.
 
 ### Reply Statuses
 
-Reply statuses are IMAP keywords stored directly on each email message. The classifier assigns exactly one status tag per reply, plus `classified` to mark it as processed. Use `set_reply_status` to set statuses manually, or `list_reply_statuses` to see all available statuses.
+The classifier assigns exactly one status per reply. Use `list_reply_statuses` to see all available statuses.
 
-| Tag | Meaning |
-|---|---|
-| `classified` | Email has been processed by the classifier |
-| `interested` | Positive — shows interest, wants to learn more |
-| `meeting_request` | Explicitly asked for or accepted a meeting |
-| `information_request` | Asked for more details, pricing, or documentation |
-| `not_interested` | Polite decline, not a fit right now |
-| `wrong_person` | Not the right contact, may have referred someone else |
-| `do_not_contact` | Hard stop — hostile, legal, or compliance concern |
-| `out_of_office` | Auto-reply or out-of-office response |
-| `unsubscribed` | Asked to stop receiving emails |
-| `bounced` | Delivery failure or bounce notification |
-
-### Campaign Tags
-
-Campaigns use IMAP keywords for zero-storage tracking. When using `send_campaign_step`, emails are automatically tagged:
-
-| Tag pattern | Example | Meaning |
+| Status | Meaning | Terminal? |
 |---|---|---|
-| `campaign_{name}` | `campaign_q1_launch` | Email belongs to this campaign |
-| `step_{n}` | `step_1` | Which sequence step was sent |
-| `variant_{name}` | `variant_a` | Which A/B variant was used |
+| `interested` | Positive — shows interest, wants to learn more | No |
+| `meeting_request` | Explicitly asked for or accepted a meeting | No |
+| `information_request` | Asked for more details, pricing, or documentation | No |
+| `not_interested` | Polite decline, not a fit right now | Yes |
+| `wrong_person` | Not the right contact, may have referred someone else | Yes |
+| `do_not_contact` | Hard stop — hostile, legal, or compliance concern | Yes |
+| `out_of_office` | Auto-reply or out-of-office response | No |
+| `unsubscribed` | Asked to stop receiving emails | Yes |
+| `bounced` | Delivery failure or bounce notification | Yes |
+
+"Terminal" means `start_campaign` will stop sending follow-ups to that contact.
 
 ### Tag Filter Syntax
 
-Both `list_sent_emails` and `list_received_emails` accept a `tag_filter` parameter with boolean expressions:
+`list_sent_emails` and `list_received_emails` accept a `tag_filter` parameter with boolean expressions:
 
 ```
 interested                              -- has tag
@@ -154,124 +228,83 @@ campaign_q1_launch AND step_1           -- first step of a campaign
 
 ## Available Tools
 
-### Email Accounts
+### Campaigns
 
-#### `list_email_accounts`
-List all registered email mailboxes with their status and domain info.
+| Tool | Description |
+|---|---|
+| `create_campaign` | Define a campaign with audience, multi-step sequence, A/B variants, and skill attachment |
+| `start_campaign` | Execute the campaign — sends next pending steps, respects delays and terminal statuses |
+| `get_campaign` | Get the full campaign config |
+| `list_campaigns` | List all campaigns on an account |
+| `delete_campaign` | Delete a campaign config |
+| `campaign_analytics` | Full report: reply rate, status breakdown, per-step + per-variant A/B performance |
+
+### Email Accounts & Analytics
+
+| Tool | Description |
+|---|---|
+| `list_email_accounts` | List all registered mailboxes with status and domain info |
+| `email_account_analytics` | Per-account analytics: sent, replied, reply rate, status breakdown |
 
 ### Sending & Replying
 
-#### `send_email`
-Send an email via SMTP from a registered mailbox. Supports plain text, HTML, CC, and BCC. A copy is automatically saved to the Sent folder via IMAP.
-
-#### `reply_to_email`
-Reply to an email in-thread. Automatically sets `In-Reply-To` and `References` headers for proper threading. Parameters: `email` (account), `uid` (message to reply to), `folder`, `text`/`html`.
-
-#### `reply_all_to_email`
-Reply-all to an email. Replies to the original sender and CCs all other recipients (minus yourself). Same threading headers as `reply_to_email`.
-
-#### `forward_email`
-Forward an email to new recipients. Includes the original body (quoted) and re-attaches all original attachments. Parameters: `email` (account), `uid`, `folder`, `to` (recipients), optional `text`/`html`.
+| Tool | Description |
+|---|---|
+| `send_email` | Send an email via SMTP. Auto-saves to Sent folder |
+| `reply_to_email` | Reply in-thread with proper threading headers |
+| `reply_all_to_email` | Reply-all (original To + CC minus yourself) |
+| `forward_email` | Forward with quoted body and original attachments |
 
 ### Reading Emails
 
-#### `list_received_emails`
-Fetch received emails from a mailbox's INBOX via IMAP. Supports `limit` (default 50), `page` (default 1, most recent first), and `tag_filter`.
-
-#### `list_sent_emails`
-Fetch sent emails from a mailbox's Sent folder via IMAP. Supports `limit` (default 50), `page` (default 1, most recent first), and `tag_filter`.
-
-#### `get_email`
-Fetch a single email by UID with full body (text + HTML), attachment metadata, and message headers (Message-ID, In-Reply-To, References). Parameters: `email` (account), `uid`, `folder` (INBOX or SENT).
-
-#### `get_email_raw`
-Fetch the raw RFC822 source of an email. Parameters: `email` (account), `uid`, `folder`.
-
-#### `delete_email`
-Delete an email by UID. Parameters: `email` (account), `uid`, `folder`.
-
-#### `get_attachment`
-Download an attachment from an email. Returns base64-encoded content. Parameters: `email` (account), `uid`, `index` (0-based, from `get_email` attachments list), `folder`.
+| Tool | Description |
+|---|---|
+| `list_received_emails` | Paginated inbox emails with `tag_filter` support |
+| `list_sent_emails` | Paginated sent emails with `tag_filter` support |
+| `get_email` | Single email by UID — full body, attachments, headers |
+| `get_email_raw` | Raw RFC822 source |
+| `delete_email` | Delete by UID |
+| `get_attachment` | Download attachment (base64) by index |
 
 ### Threads
 
-#### `list_threads`
-Find received emails that are replies to sent emails. Matches by normalized subject and sender/recipient overlap. Returns matched pairs (with both sent and received email details) and unmatched UIDs. Filters to unclassified emails by default.
-
-#### `get_thread`
-Get all messages in a conversation thread by subject, across both INBOX and Sent. Groups by normalized subject (strips Re:/Fwd: prefixes). Returns messages sorted chronologically with sender list. Parameters: `email` (account), `subject`, `limit`.
+| Tool | Description |
+|---|---|
+| `list_threads` | Match received replies to sent emails by subject + sender |
+| `get_thread` | Get all messages in a conversation thread by subject |
 
 ### Drafts
 
-#### `list_drafts`
-List drafts from the Drafts folder. Supports `limit` (default 50) and `page` (default 1, most recent first).
-
-#### `get_draft`
-Fetch a single draft by UID with full body and attachment metadata.
-
-#### `create_draft`
-Compose and save a draft to the Drafts folder without sending. Parameters: `email` (account), `to`, `subject`, `text`/`html`, `cc`, `bcc`.
-
-#### `update_draft`
-Replace an existing draft with new content. IMAP doesn't support in-place edits, so this deletes the old draft and saves a new one. Parameters: `email` (account), `uid` (existing draft), `to`, `subject`, `text`/`html`, `cc`, `bcc`.
-
-#### `delete_draft`
-Delete a draft by UID from the Drafts folder.
-
-#### `send_draft`
-Send an existing draft. Sends via SMTP, copies to Sent folder, and removes from Drafts. Parameters: `email` (account), `uid`.
+| Tool | Description |
+|---|---|
+| `list_drafts` | Paginated draft listing |
+| `get_draft` | Single draft by UID |
+| `create_draft` | Compose and save without sending |
+| `update_draft` | Replace draft content |
+| `delete_draft` | Delete a draft |
+| `send_draft` | Send a draft, move to Sent, remove from Drafts |
 
 ### Tagging
 
-#### `add_email_tag`
-Add an IMAP keyword to a message. Parameters: `email` (account), `uid` (message UID), `tag` (keyword), `folder` (INBOX or SENT, default INBOX).
-
-#### `remove_email_tag`
-Remove an IMAP keyword from a message. Parameters: `email` (account), `uid` (message UID), `tag` (keyword), `folder` (INBOX or SENT, default INBOX).
-
-### Audiences
-
-#### `add_to_audience`
-Add a contact to one or more audience segments. Searches all mailbox accounts for messages from/to that contact and tags them. Parameters: `email` (contact email), `segments` (array, default `["general"]`). Stores segments as `audience_` prefixed IMAP keywords.
-
-#### `remove_from_audience`
-Remove a contact from one or more audience segments. Parameters: `email` (contact email), `segments` (array). Removes tags across all mailbox accounts.
-
-#### `list_audiences`
-List all audience segments with contacts. Scans all mailbox accounts and returns unique contacts per segment. Returns `{ segments: [{ name, count, contacts }] }`.
+| Tool | Description |
+|---|---|
+| `add_email_tag` | Add an IMAP keyword to a message |
+| `remove_email_tag` | Remove an IMAP keyword from a message |
 
 ### Reply Statuses
 
-#### `list_reply_statuses`
-Returns all available reply classification statuses with descriptions.
+| Tool | Description |
+|---|---|
+| `list_reply_statuses` | List available reply classification statuses |
+| `set_reply_status` | Set reply status on received + sent email (one status at a time) |
 
-#### `set_reply_status`
-Set a reply's status (e.g. `interested`, `meeting_request`). Tags both the received reply and the matching sent email. Removes any previous status tag first (ensures one status at a time). Parameters: `email` (account), `uid` (reply in INBOX), `status`, `sent_uid` (optional, matching sent email).
+### Audiences
 
-### Campaigns
-
-#### `create_campaign`
-Define a campaign: name, audience segment, contacts with metadata, multi-step sequence with A/B variants, and optional skill for auto-reply handling. Campaign config is stored as an IMAP draft — no external database. Parameters: `email` (account), `name`, `audience_segment`, `contacts`, `sequence` (steps with variants), `skill`.
-
-#### `list_campaigns`
-List all campaigns stored on an email account.
-
-#### `get_campaign`
-Get the full campaign config including sequence, contacts, and skill.
-
-#### `delete_campaign`
-Delete a campaign config.
-
-#### `start_campaign`
-Execute the campaign: sends the next pending step to each contact respecting delays, A/B variant weights, and terminal reply statuses. Idempotent — call repeatedly (e.g. daily via cron). Skips contacts who replied with `do_not_contact`, `unsubscribed`, `bounced`, `not_interested`, or `wrong_person`. Parameters: `email` (account), `campaign` (name).
-
-#### `campaign_analytics`
-Full campaign report: total sent, unique contacts, reply rate, status breakdown (interested, meeting_request, etc.), per-step performance, per-variant A/B comparison. Parameters: `email` (account), `campaign` (name).
-
-### Analytics
-
-#### `email_account_analytics`
-Per-account analytics: total sent, total replied, reply rate, and breakdown by all reply statuses with rates.
+| Tool | Description |
+|---|---|
+| `add_to_audience` | Add a contact to audience segments |
+| `remove_from_audience` | Remove a contact from segments |
+| `list_audiences` | List all segments with contacts |
 
 ## Environment Variables
 
