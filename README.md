@@ -30,11 +30,11 @@ Open-source MCP server for email outreach campaigns. Create multi-step sequences
 
 ### Step 1 — Build your audience
 
-Enroll contacts into audience segments. Segments are stored as IMAP keywords (`audience_{name}`) directly on emails, so there's no external database.
+Enroll contacts into audience segments with their metadata for email personalization. Contact data is stored as marker messages in an IMAP `Contacts` folder — works even for brand-new contacts you've never emailed before (cold outreach).
 
 ```
-add_to_audience({ email: "john@acme.com", segments: ["q1_launch"] })
-add_to_audience({ email: "jane@corp.io",  segments: ["q1_launch"] })
+add_to_audience({ email: "john@acme.com", firstName: "John", company: "Acme", segments: ["q1_launch"] })
+add_to_audience({ email: "jane@corp.io",  firstName: "Jane", company: "Corp", segments: ["q1_launch"] })
 ```
 
 You can list all segments and their contacts at any time:
@@ -57,8 +57,8 @@ create_campaign({
     {
       step: 1, delay_days: 0,
       variants: [
-        { name: "a", weight: 50, subject: "Quick question", text: "Hi, I saw your company is..." },
-        { name: "b", weight: 50, subject: "Partnership idea", text: "Hey, we help companies like yours..." }
+        { name: "a", weight: 50, subject: "Quick question {{firstName}}", text: "Hi {{firstName}}, I saw {{company}} is..." },
+        { name: "b", weight: 50, subject: "{{company}} + us?", text: "Hey {{firstName}}, we help companies like {{company}}..." }
       ]
     },
     {
@@ -70,7 +70,7 @@ create_campaign({
     {
       step: 3, delay_days: 5,
       variants: [
-        { name: "a", weight: 100, subject: "", text: "Last try — would love 15 min to show you..." }
+        { name: "a", weight: 100, subject: "", text: "Last try {{firstName}} — would love 15 min to show you..." }
       ]
     }
   ]
@@ -80,7 +80,7 @@ create_campaign({
 **How sequences work:**
 - **Steps** execute in order. `delay_days` is the number of days to wait after the previous step before sending.
 - **Variants** enable A/B testing. Each variant has a `weight` — with two variants at `weight: 50`, each gets ~50% of contacts. Use `weight: 100` for a single variant (no split).
-- **Template variables** — `{{email}}` is replaced with the contact's email address.
+- **Template variables** — `{{firstName}}`, `{{lastName}}`, `{{email}}`, `{{company}}` are replaced with each contact's data from the audience.
 - **Empty subject on step 2+** means "reply in the same thread" — the email is sent as a reply to the step 1 email with proper `In-Reply-To` and `References` headers, so it threads correctly in the recipient's inbox.
 - **Audience-driven** — the campaign doesn't store contacts. It reads them from the audience segment at runtime, so adding/removing contacts from the segment updates who gets sent to.
 
@@ -184,7 +184,7 @@ get_email_account_analytics({ email: "me@mycompany.com" })
 
 Outbound Tools uses **IMAP keywords** as a native tagging and classification layer, directly on the email account itself. No external database, no third-party analytics platform, no syncing pipelines.
 
-- **Zero infrastructure.** Tags like `interested`, `bounced`, `do_not_contact` are stored as IMAP keywords on each message. Campaign configs are stored as IMAP drafts. The mailbox *is* the database.
+- **Zero infrastructure.** Tags like `interested`, `bounced`, `do_not_contact` are stored as IMAP keywords on each message. Campaign configs are stored as IMAP drafts. Contact metadata lives in an IMAP `Contacts` folder. The mailbox *is* the database.
 - **Instant querying.** IMAP SEARCH natively supports keyword filtering. Fetching all positive replies or computing bounce rates is a single IMAP command, not a full-table scan.
 - **Portable and durable.** Tags live on the mail server. Switch clients, migrate tools, or read from any IMAP client. Your classification data follows the emails.
 - **No state to manage.** The `classified` keyword makes processing incremental. Each run only touches new emails, then marks them done. No cursor, no offset table, no checkpoint file.
@@ -297,7 +297,7 @@ campaign_q1_launch AND step_1           -- first step of a campaign
 
 | Tool | Description |
 |---|---|
-| `add_to_audience` | Add a contact to audience segments |
+| `add_to_audience` | Add a contact to audience segments with optional metadata (firstName, lastName, company) |
 | `remove_from_audience` | Remove a contact from segments |
 | `list_audiences` | List all segments with contacts |
 

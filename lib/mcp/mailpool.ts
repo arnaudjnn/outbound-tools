@@ -9,6 +9,7 @@ import {
   fetchDrafts, saveDraft, deleteDraft, fetchAttachmentByUid,
   normalizeSubject, extractEmail, resolveDraftsFolder,
   saveCampaignConfig, loadCampaignConfig, listCampaignConfigs, deleteCampaignConfig,
+  upsertContactMarker, listAudienceSegmentsWithContacts, getContactMetadataByEmails,
 } from "@/lib/imap";
 import { sendEmail, composeDraft } from "@/lib/smtp";
 
@@ -300,20 +301,26 @@ export function registerMailpoolTools(server: McpServer) {
     {
       email: z.string().describe("Contact email to segment (e.g. the person you send to or receive from)"),
       segments: z.array(z.string()).optional().default(["general"]).describe("Audience segments to add (e.g. ['employee', 'vip'])"),
+      firstName: z.string().optional().describe("Contact first name (for email personalization)"),
+      lastName: z.string().optional().describe("Contact last name"),
+      company: z.string().optional().describe("Contact company name"),
     },
-    async ({ email, segments }) => {
+    async ({ email, segments, firstName, lastName, company }) => {
       try {
         const mailboxes = await listMailboxes();
         let totalTagged = 0;
         for (const mb of mailboxes) {
           const details = await getMailboxById(mb.id);
+          // Tag existing messages in INBOX and SENT
           for (const folder of ["INBOX", "SENT"] as const) {
             totalTagged += await addAudienceSegments(details, folder, email, segments);
           }
+          // Always create/update a contact marker with metadata + segments
+          await upsertContactMarker(details, { email, firstName, lastName, company }, segments);
         }
         return {
           content: [
-            { type: "text", text: `Added segments [${segments.join(", ")}] to ${email}. Tagged ${totalTagged} messages across ${mailboxes.length} accounts.` },
+            { type: "text", text: `Added segments [${segments.join(", ")}] to ${email}${firstName ? ` (${firstName}${lastName ? " " + lastName : ""}${company ? ", " + company : ""})` : ""}. Tagged ${totalTagged} existing messages + contact marker across ${mailboxes.length} accounts.` },
           ],
         };
       } catch (err: unknown) {
@@ -368,7 +375,7 @@ export function registerMailpoolTools(server: McpServer) {
         for (const mb of mailboxes) {
           const details = await getMailboxById(mb.id);
           for (const folder of ["INBOX", "SENT"] as const) {
-            const segments = await listAudienceSegments(details, folder);
+            const segments = await listAudienceSegmentsWithContacts(details, folder);
             for (const seg of segments) {
               if (!mergedSegments.has(seg.name)) mergedSegments.set(seg.name, new Set());
               for (const contact of seg.contacts) {
@@ -1140,9 +1147,9 @@ export function registerMailpoolTools(server: McpServer) {
         variants: z.array(z.object({
           name: z.string().describe("Variant name (e.g. 'a', 'b')"),
           weight: z.number().describe("Selection weight (e.g. 50 for 50%)"),
-          subject: z.string().describe("Subject line (supports {{email}}). Empty on step 2+ = reply in same thread."),
-          text: z.string().optional().describe("Plain text body with {{email}} support"),
-          html: z.string().optional().describe("HTML body with {{email}} support"),
+          subject: z.string().describe("Subject line (supports {{firstName}}, {{lastName}}, {{email}}, {{company}}). Empty on step 2+ = reply in same thread."),
+          text: z.string().optional().describe("Plain text body with {{placeholder}} support"),
+          html: z.string().optional().describe("HTML body with {{placeholder}} support"),
         })),
       })).describe("Email sequence steps with A/B variants"),
     },
@@ -1260,13 +1267,13 @@ export function registerMailpoolTools(server: McpServer) {
         const campaignTag = `campaign_${config.name}`;
         const sortedSteps = [...config.sequence].sort((a, b) => a.step - b.step);
 
-        // Pull contacts from audience segment
+        // Pull contacts from audience segment (includes Contacts folder markers)
         const mailboxes = await listMailboxes();
         const mergedContacts = new Set<string>();
         for (const mb of mailboxes) {
           const details = await getMailboxById(mb.id);
           for (const folder of ["INBOX", "SENT"] as const) {
-            const segments = await listAudienceSegments(details, folder);
+            const segments = await listAudienceSegmentsWithContacts(details, folder);
             const target = segments.find((s) => s.name === config.audience_segment);
             if (target) {
               for (const c of target.contacts) mergedContacts.add(c);
@@ -1281,6 +1288,9 @@ export function registerMailpoolTools(server: McpServer) {
             isError: true,
           };
         }
+
+        // Load contact metadata for template personalization
+        const contactMetadata = await getContactMetadataByEmails(mailbox, contacts);
 
         // Fetch all sent emails tagged with this campaign
         const sentPage = await fetchSentEmails(mailbox, 500);
@@ -1301,7 +1311,12 @@ export function registerMailpoolTools(server: McpServer) {
         }
 
         function interpolate(template: string, contactEmail: string) {
-          return template.replace(/\{\{email\}\}/g, contactEmail);
+          const meta = contactMetadata.get(contactEmail.toLowerCase());
+          return template
+            .replace(/\{\{email\}\}/g, contactEmail)
+            .replace(/\{\{firstName\}\}/g, meta?.firstName || "")
+            .replace(/\{\{lastName\}\}/g, meta?.lastName || "")
+            .replace(/\{\{company\}\}/g, meta?.company || "");
         }
 
         const results: Array<{ contact: string; step: number; variant: string; status: string }> = [];

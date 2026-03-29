@@ -612,6 +612,175 @@ export async function listAudienceSegments(
   }
 }
 
+// --- Contact metadata via IMAP Contacts folder ---
+
+const CONTACTS_FOLDER = "Contacts";
+
+export interface ContactMetadata {
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  company?: string;
+}
+
+// Ensures the Contacts folder exists, creating it if needed.
+async function ensureContactsFolder(client: ImapFlow): Promise<void> {
+  try {
+    const folders = await client.list();
+    if (folders.some((f) => f.path === CONTACTS_FOLDER)) return;
+    await client.mailboxCreate(CONTACTS_FOLDER);
+  } catch {
+    // Folder may already exist on some servers that throw on duplicate create
+  }
+}
+
+// Appends or updates a contact marker message in the Contacts folder.
+// Marker stores metadata as JSON body and audience segments as flags.
+export async function upsertContactMarker(
+  mailbox: MailboxDetails,
+  contact: ContactMetadata,
+  segments: string[]
+): Promise<void> {
+  const flags = segments.map((s) => `${AUDIENCE_PREFIX}${s}`);
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    await ensureContactsFolder(client);
+    const lock = await client.getMailboxLock(CONTACTS_FOLDER);
+    try {
+      // Check if a marker already exists for this contact
+      const existing = await client.search({ to: contact.email }, { uid: true });
+      if (existing && existing.length > 0) {
+        // Read existing marker to merge metadata
+        const msg = await client.fetchOne(String(existing[0]), { source: true, flags: true }, { uid: true });
+        if (msg && msg.source) {
+          const parsed = await simpleParser(msg.source);
+          const existingData: ContactMetadata = (() => {
+            try { return JSON.parse(parsed.text || "{}"); } catch { return {}; }
+          })();
+          // Merge: new values override, keep existing if not provided
+          const merged: ContactMetadata = {
+            email: contact.email,
+            firstName: contact.firstName || existingData.firstName,
+            lastName: contact.lastName || existingData.lastName,
+            company: contact.company || existingData.company,
+          };
+          // Collect existing audience flags to preserve them
+          const existingFlags = Array.from(msg.flags || []).filter((f) => f.startsWith(AUDIENCE_PREFIX));
+          const allFlags = [...new Set([...existingFlags, ...flags])];
+          // Delete old marker and create updated one
+          await client.messageDelete({ uid: existing[0] }, { uid: true });
+          const raw = buildContactMarkerRfc822(mailbox, merged);
+          await client.append(CONTACTS_FOLDER, raw, ["\\Seen", ...allFlags]);
+          return;
+        }
+      }
+      // No existing marker — create new one
+      const raw = buildContactMarkerRfc822(mailbox, contact);
+      await client.append(CONTACTS_FOLDER, raw, ["\\Seen", ...flags]);
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+function buildContactMarkerRfc822(mailbox: MailboxDetails, contact: ContactMetadata): Buffer {
+  const lines = [
+    `From: ${mailbox.firstName} ${mailbox.lastName} <${mailbox.email}>`,
+    `To: ${contact.email}`,
+    `Subject: Contact: ${contact.email}`,
+    `Date: ${new Date().toUTCString()}`,
+    ``,
+    JSON.stringify(contact, null, 2),
+  ];
+  return Buffer.from(lines.join("\r\n"));
+}
+
+// Reads all contact markers from the Contacts folder with their metadata and segments.
+export async function listContactMarkers(
+  mailbox: MailboxDetails
+): Promise<Array<ContactMetadata & { segments: string[] }>> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    await ensureContactsFolder(client);
+    const lock = await client.getMailboxLock(CONTACTS_FOLDER);
+    try {
+      const mb = client.mailbox;
+      const total = mb && typeof mb === "object" ? mb.exists : 0;
+      if (total === 0) return [];
+
+      const contacts: Array<ContactMetadata & { segments: string[] }> = [];
+      for await (const msg of client.fetch("1:*", { flags: true, source: true })) {
+        if (!msg.source) continue;
+        const parsed = await simpleParser(msg.source);
+        const data: ContactMetadata = (() => {
+          try { return JSON.parse(parsed.text || "{}"); } catch { return { email: "" }; }
+        })();
+        if (!data.email) continue;
+        const segments = Array.from(msg.flags || [])
+          .filter((f) => f.startsWith(AUDIENCE_PREFIX))
+          .map((f) => f.slice(AUDIENCE_PREFIX.length));
+        contacts.push({ ...data, segments });
+      }
+      return contacts;
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+// Gets contact metadata for specific emails from the Contacts folder.
+export async function getContactMetadataByEmails(
+  mailbox: MailboxDetails,
+  emails: string[]
+): Promise<Map<string, ContactMetadata>> {
+  const markers = await listContactMarkers(mailbox);
+  const emailSet = new Set(emails.map((e) => e.toLowerCase()));
+  const result = new Map<string, ContactMetadata>();
+  for (const m of markers) {
+    if (emailSet.has(m.email.toLowerCase())) {
+      result.set(m.email.toLowerCase(), m);
+    }
+  }
+  return result;
+}
+
+// Lists audience segments including contacts from the Contacts folder.
+export async function listAudienceSegmentsWithContacts(
+  mailbox: MailboxDetails,
+  folder: string
+): Promise<AudienceSegment[]> {
+  // Get segments from the regular folder (INBOX/SENT)
+  const segments = await listAudienceSegments(mailbox, folder);
+
+  // Also get segments from Contacts folder markers
+  if (folder === "INBOX") {
+    // Only merge contacts markers once (not for both INBOX and SENT calls)
+    const markers = await listContactMarkers(mailbox);
+    const segmentMap = new Map<string, Set<string>>();
+    for (const seg of segments) {
+      segmentMap.set(seg.name, new Set(seg.contacts));
+    }
+    for (const marker of markers) {
+      for (const segName of marker.segments) {
+        if (!segmentMap.has(segName)) segmentMap.set(segName, new Set());
+        segmentMap.get(segName)!.add(marker.email.toLowerCase());
+      }
+    }
+    return Array.from(segmentMap.entries()).map(([name, contacts]) => ({
+      name,
+      contacts: Array.from(contacts),
+    }));
+  }
+
+  return segments;
+}
+
 // Fetches emails from a folder that do NOT have the `classified` keyword.
 export async function fetchUnclassifiedEmails(
   mailbox: MailboxDetails,
