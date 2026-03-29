@@ -12,20 +12,30 @@ import type { EmailMessage, ThreadMatch } from "@/lib/imap";
 import { checkApiKey } from "@/lib/auth";
 
 const CLASSIFICATION_PROMPT = `Classify this email reply into exactly one category:
-- interested: positive reply, wants to learn more, requests meeting/call
-- complained: negative, asked to stop, reported spam
+- interested: positive reply, shows interest, wants to learn more
+- meeting_request: explicitly asked for or accepted a meeting/call
+- information_request: asked for more details, pricing, or documentation
+- not_interested: polite decline, not a fit right now
+- wrong_person: not the right contact, may have referred someone else
+- do_not_contact: hard stop, hostile, legal/compliance concern
 - out_of_office: auto-reply, vacation, OOO message
-- unsubscribed: explicitly asked to be removed
+- unsubscribed: explicitly asked to be removed from emails
 - bounced: delivery failure, invalid address, mailbox full
 
-When ambiguous, prefer the most specific. OOO beats interested.
+When ambiguous, prefer the most specific category.
+meeting_request beats interested. do_not_contact beats unsubscribed.
+out_of_office beats interested. wrong_person beats not_interested.
 If none apply, respond with "none".
 
 Respond with only the category name.`;
 
 const VALID_CATEGORIES = [
   "interested",
-  "complained",
+  "meeting_request",
+  "information_request",
+  "not_interested",
+  "wrong_person",
+  "do_not_contact",
   "out_of_office",
   "unsubscribed",
   "bounced",
@@ -76,7 +86,11 @@ interface AccountResult {
   account: string;
   total: number;
   interested: number;
-  complained: number;
+  meeting_request: number;
+  information_request: number;
+  not_interested: number;
+  wrong_person: number;
+  do_not_contact: number;
   out_of_office: number;
   unsubscribed: number;
   bounced: number;
@@ -111,7 +125,11 @@ export async function GET(request: Request) {
         account: mb.email,
         total: 0,
         interested: 0,
-        complained: 0,
+        meeting_request: 0,
+        information_request: 0,
+        not_interested: 0,
+        wrong_person: 0,
+        do_not_contact: 0,
         out_of_office: 0,
         unsubscribed: 0,
         bounced: 0,

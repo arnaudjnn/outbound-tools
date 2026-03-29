@@ -9,7 +9,7 @@ Deploying Outbound Tools gives you a hosted server that connects to your Mailpoo
 ## Common Use Cases
 
 - Send cold email campaigns to audience segments with account rotation and deliverability safeguards
-- Classify incoming replies by sentiment (interested, bounced, complained, out-of-office, unsubscribed)
+- Classify incoming replies by status (interested, meeting_request, information_request, not_interested, wrong_person, do_not_contact, out_of_office, unsubscribed, bounced)
 - Track bounce rates, complaint rates, and interest rates across multiple sender accounts
 
 ## Dependencies for Outbound Tools Hosting

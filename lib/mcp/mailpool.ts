@@ -33,7 +33,7 @@ export function registerMailpoolTools(server: McpServer) {
       email: z.string(),
       limit: z.number().optional().default(50).describe("Emails per page"),
       page: z.number().optional().default(1).describe("Page number (1-indexed, most recent first)"),
-      tag_filter: z.string().optional().describe("Boolean tag filter expression. Examples: 'interested', 'classified AND interested', 'NOT classified', 'complained OR unsubscribed'"),
+      tag_filter: z.string().optional().describe("Boolean tag filter expression. Examples: 'interested', 'classified AND interested', 'NOT classified', 'do_not_contact OR unsubscribed'"),
     },
     async ({ email, limit, page, tag_filter }) => {
       const mailbox = await getMailboxByEmail(email);
@@ -106,7 +106,7 @@ export function registerMailpoolTools(server: McpServer) {
       email: z.string(),
       limit: z.number().optional().default(50).describe("Emails per page"),
       page: z.number().optional().default(1).describe("Page number (1-indexed, most recent first)"),
-      tag_filter: z.string().optional().describe("Boolean tag filter expression. Examples: 'interested', 'classified AND interested', 'NOT classified', 'complained OR unsubscribed'"),
+      tag_filter: z.string().optional().describe("Boolean tag filter expression. Examples: 'interested', 'classified AND interested', 'NOT classified', 'do_not_contact OR unsubscribed'"),
     },
     async ({ email, limit, page, tag_filter }) => {
       const mailbox = await getMailboxByEmail(email);
@@ -168,9 +168,9 @@ export function registerMailpoolTools(server: McpServer) {
   );
 
   server.tool(
-    "list_metrics",
+    "email_account_analytics",
     {
-      email: z.string().describe("Email account to get metrics for"),
+      email: z.string().describe("Email account to get analytics for"),
     },
     async ({ email }) => {
       const mailbox = await getMailboxByEmail(email);
@@ -185,12 +185,8 @@ export function registerMailpoolTools(server: McpServer) {
                 type: "text",
                 text: JSON.stringify({
                   totalSent: 0,
-                  bounced: 0,
-                  complained: 0,
-                  interested: 0,
-                  bounce_rate: 0,
-                  complain_rate: 0,
-                  interest_rate: 0,
+                  statuses: {},
+                  rates: {},
                 }, null, 2),
               },
             ],
@@ -198,39 +194,44 @@ export function registerMailpoolTools(server: McpServer) {
         }
 
         const sentFolder = await resolveFolder(mailbox, "SENT");
-        const [bounced, complained, interested] = await Promise.all([
-          countByKeyword(mailbox, sentFolder, "bounced"),
-          countByKeyword(mailbox, sentFolder, "complained"),
-          countByKeyword(mailbox, sentFolder, "interested"),
-        ]);
+        const statusTags = [
+          "interested", "meeting_request", "information_request",
+          "not_interested", "wrong_person", "do_not_contact",
+          "out_of_office", "unsubscribed", "bounced",
+        ];
+        const counts = await Promise.all(
+          statusTags.map((tag) => countByKeyword(mailbox, sentFolder, tag))
+        );
 
-        const rate = (count: number) =>
-          Math.round((count / totalSent) * 10000) / 100;
+        const statuses: Record<string, number> = {};
+        const rates: Record<string, number> = {};
+        const rate = (count: number) => Math.round((count / totalSent) * 10000) / 100;
+
+        for (let i = 0; i < statusTags.length; i++) {
+          statuses[statusTags[i]] = counts[i];
+          rates[statusTags[i]] = rate(counts[i]);
+        }
+
+        const totalReplied = counts.reduce((sum, c) => sum + c, 0);
 
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify(
-                {
-                  totalSent,
-                  bounced,
-                  complained,
-                  interested,
-                  bounce_rate: rate(bounced),
-                  complain_rate: rate(complained),
-                  interest_rate: rate(interested),
-                },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                totalSent,
+                totalReplied,
+                replyRate: rate(totalReplied),
+                statuses,
+                rates,
+              }, null, 2),
             },
           ],
         };
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         return {
-          content: [{ type: "text", text: `Failed to get metrics: ${errorMessage}` }],
+          content: [{ type: "text", text: `Failed to get analytics: ${errorMessage}` }],
           isError: true,
         };
       }
@@ -920,6 +921,355 @@ export function registerMailpoolTools(server: McpServer) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: "text", text: `Failed to send draft: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // --- Reply status tools ---
+
+  const REPLY_STATUSES = [
+    { tag: "interested", description: "Positive — shows interest, wants to learn more" },
+    { tag: "meeting_request", description: "Explicitly asked for or accepted a meeting" },
+    { tag: "information_request", description: "Asked for more details, pricing, or documentation" },
+    { tag: "not_interested", description: "Polite decline, not a fit right now" },
+    { tag: "wrong_person", description: "Not the right contact, may have referred someone else" },
+    { tag: "do_not_contact", description: "Hard stop — hostile, legal, or compliance concern" },
+    { tag: "out_of_office", description: "Auto-reply or out-of-office response" },
+    { tag: "unsubscribed", description: "Asked to stop receiving emails" },
+    { tag: "bounced", description: "Delivery failure or bounce notification" },
+  ];
+
+  const STATUS_TAGS = REPLY_STATUSES.map((s) => s.tag);
+
+  server.tool(
+    "list_reply_statuses",
+    {},
+    async () => {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ statuses: REPLY_STATUSES }, null, 2),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "set_reply_status",
+    {
+      email: z.string().describe("Email account that owns the mailbox"),
+      uid: z.number().describe("UID of the received reply in INBOX"),
+      status: z.enum([
+        "interested", "meeting_request", "information_request",
+        "not_interested", "wrong_person", "do_not_contact",
+        "out_of_office", "unsubscribed", "bounced",
+      ]).describe("Reply status to set"),
+      sent_uid: z.number().optional().describe("UID of the matching sent email (if known). Both emails get tagged."),
+    },
+    async ({ email, uid, status, sent_uid }) => {
+      const mailbox = await getMailboxByEmail(email);
+      try {
+        // Remove any existing status tags from the reply
+        const detail = await fetchEmailByUid(mailbox, "INBOX", uid);
+        const existingStatuses = detail.flags.filter((f) => STATUS_TAGS.includes(f));
+        for (const oldStatus of existingStatuses) {
+          await removeEmailFlag(mailbox, "INBOX", uid, oldStatus);
+        }
+
+        // Set new status + classified
+        await setEmailFlag(mailbox, "INBOX", uid, status);
+        await setEmailFlag(mailbox, "INBOX", uid, "classified");
+
+        // Tag matching sent email too
+        if (sent_uid) {
+          const sentFolder = await resolveFolder(mailbox, "SENT");
+          const sentDetail = await fetchEmailByUid(mailbox, sentFolder, sent_uid);
+          const existingSentStatuses = sentDetail.flags.filter((f) => STATUS_TAGS.includes(f));
+          for (const oldStatus of existingSentStatuses) {
+            await removeEmailFlag(mailbox, sentFolder, sent_uid, oldStatus);
+          }
+          await setEmailFlag(mailbox, sentFolder, sent_uid, status);
+          await setEmailFlag(mailbox, sentFolder, sent_uid, "classified");
+        }
+
+        return {
+          content: [{
+            type: "text",
+            text: `Status "${status}" set on reply UID ${uid}${sent_uid ? ` and sent UID ${sent_uid}` : ""}.`,
+          }],
+        };
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Failed to set reply status: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // --- Campaign tools ---
+
+  server.tool(
+    "send_campaign_step",
+    {
+      email: z.string().describe("Email account to send from"),
+      campaign: z.string().describe("Campaign name (used as tag: campaign_{name})"),
+      step: z.number().describe("Step number (1 = initial email, 2+ = follow-ups)"),
+      audience_segment: z.string().describe("Audience segment to send to (e.g. 'general', 'vip')"),
+      variants: z.array(z.object({
+        name: z.string().describe("Variant name (e.g. 'a', 'b')"),
+        weight: z.number().describe("Selection weight (e.g. 50 for 50%)"),
+        subject: z.string().describe("Email subject. Supports {{firstName}}, {{lastName}}, {{email}}, {{company}} placeholders. Empty string on step 2+ means reply in same thread."),
+        text: z.string().optional().describe("Plain text body with {{placeholder}} support"),
+        html: z.string().optional().describe("HTML body with {{placeholder}} support"),
+      })).describe("A/B variants with weights"),
+      contacts: z.array(z.object({
+        email: z.string(),
+        firstName: z.string().optional(),
+        lastName: z.string().optional(),
+        company: z.string().optional(),
+      })).describe("Contacts to send to. Must be in the audience segment."),
+    },
+    async ({ email, campaign, step, audience_segment: _segment, variants, contacts }) => {
+      const mailbox = await getMailboxByEmail(email);
+      const campaignTag = `campaign_${campaign}`;
+      const stepTag = `step_${step}`;
+
+      // Pick variant by weighted random selection
+      const totalWeight = variants.reduce((sum, v) => sum + v.weight, 0);
+      function pickVariant() {
+        let r = Math.random() * totalWeight;
+        for (const v of variants) {
+          r -= v.weight;
+          if (r <= 0) return v;
+        }
+        return variants[variants.length - 1];
+      }
+
+      function interpolate(template: string, contact: typeof contacts[0]) {
+        return template
+          .replace(/\{\{firstName\}\}/g, contact.firstName || "")
+          .replace(/\{\{lastName\}\}/g, contact.lastName || "")
+          .replace(/\{\{email\}\}/g, contact.email)
+          .replace(/\{\{company\}\}/g, contact.company || "");
+      }
+
+      // For step 2+, find the original sent email to reply in-thread
+      let sentEmails: import("@/lib/imap").EmailMessage[] = [];
+      if (step > 1) {
+        const sentPage = await fetchSentEmails(mailbox, 500);
+        sentEmails = sentPage.emails.filter((e) => e.flags.includes(campaignTag));
+      }
+
+      const results: Array<{ contact: string; variant: string; status: string; messageId?: string }> = [];
+
+      for (const contact of contacts) {
+        const variant = pickVariant();
+        const variantTag = `variant_${variant.name}`;
+
+        try {
+          // For step 2+, check if this contact already received this step
+          if (step > 1) {
+            const alreadySent = sentEmails.find(
+              (e) => e.to.toLowerCase().includes(contact.email.toLowerCase()) && e.flags.includes(stepTag)
+            );
+            if (alreadySent) {
+              results.push({ contact: contact.email, variant: variant.name, status: "skipped_already_sent" });
+              continue;
+            }
+          }
+
+          const subject = interpolate(variant.subject, contact);
+          const text = variant.text ? interpolate(variant.text, contact) : undefined;
+          const html = variant.html ? interpolate(variant.html, contact) : undefined;
+
+          if (!text && !html) {
+            results.push({ contact: contact.email, variant: variant.name, status: "skipped_no_body" });
+            continue;
+          }
+
+          let result;
+
+          if (step > 1 && !subject) {
+            // Reply in-thread: find original sent email to this contact
+            const originalSent = sentEmails.find(
+              (e) => e.to.toLowerCase().includes(contact.email.toLowerCase()) && e.flags.includes("step_1")
+            );
+            if (originalSent) {
+              const sentFolder = await resolveFolder(mailbox, "SENT");
+              const headers = await getEmailHeaders(mailbox, sentFolder, originalSent.uid);
+              const reSubject = headers.subject.match(/^re:/i) ? headers.subject : `Re: ${headers.subject}`;
+              const references = [headers.references, headers.messageId].filter(Boolean).join(" ");
+
+              result = await sendEmail(mailbox, {
+                to: [contact.email],
+                subject: reSubject,
+                text,
+                html,
+                inReplyTo: headers.messageId,
+                references,
+              });
+            } else {
+              results.push({ contact: contact.email, variant: variant.name, status: "skipped_no_original_thread" });
+              continue;
+            }
+          } else {
+            result = await sendEmail(mailbox, {
+              to: [contact.email],
+              subject,
+              text,
+              html,
+            });
+          }
+
+          await appendToSent(mailbox, result.raw);
+
+          // Tag the sent email with campaign metadata
+          // Find the just-sent email by searching recent sent
+          const recentSent = await fetchSentEmails(mailbox, 5);
+          const justSent = recentSent.emails.find(
+            (e) => e.to.toLowerCase().includes(contact.email.toLowerCase())
+          );
+          if (justSent) {
+            const sentFolder = await resolveFolder(mailbox, "SENT");
+            await setEmailFlag(mailbox, sentFolder, justSent.uid, campaignTag);
+            await setEmailFlag(mailbox, sentFolder, justSent.uid, stepTag);
+            await setEmailFlag(mailbox, sentFolder, justSent.uid, variantTag);
+          }
+
+          results.push({ contact: contact.email, variant: variant.name, status: "sent", messageId: result.messageId });
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          results.push({ contact: contact.email, variant: variant.name, status: `error: ${errorMessage}` });
+        }
+      }
+
+      const sent = results.filter((r) => r.status === "sent").length;
+      const skipped = results.filter((r) => r.status.startsWith("skipped")).length;
+      const errors = results.filter((r) => r.status.startsWith("error")).length;
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            campaign,
+            step,
+            summary: { sent, skipped, errors, total: contacts.length },
+            results,
+          }, null, 2),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "campaign_analytics",
+    {
+      email: z.string().describe("Email account to analyze"),
+      campaign: z.string().describe("Campaign name (matches campaign_{name} tag)"),
+    },
+    async ({ email, campaign }) => {
+      const mailbox = await getMailboxByEmail(email);
+      const campaignTag = `campaign_${campaign}`;
+
+      try {
+        // Fetch all sent emails for this campaign
+        const sentPage = await fetchSentEmails(mailbox, 500);
+        const campaignSent = sentPage.emails.filter((e) => e.flags.includes(campaignTag));
+
+        if (campaignSent.length === 0) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ campaign, totalSent: 0, message: "No emails found for this campaign." }, null, 2) }],
+          };
+        }
+
+        // Fetch replies to match
+        const inboxPage = await fetchEmails(mailbox, "INBOX", 500);
+
+        // Per-step and per-variant breakdown
+        const steps = new Map<string, { sent: number; variants: Map<string, number> }>();
+        const uniqueContacts = new Set<string>();
+
+        for (const e of campaignSent) {
+          const stepFlag = e.flags.find((f) => f.startsWith("step_"));
+          const variantFlag = e.flags.find((f) => f.startsWith("variant_"));
+          const stepName = stepFlag || "unknown";
+          const variantName = variantFlag || "unknown";
+
+          if (!steps.has(stepName)) steps.set(stepName, { sent: 0, variants: new Map() });
+          const stepData = steps.get(stepName)!;
+          stepData.sent++;
+          stepData.variants.set(variantName, (stepData.variants.get(variantName) || 0) + 1);
+
+          uniqueContacts.add(extractEmail(e.to));
+        }
+
+        // Count statuses on sent emails (tagged by set_reply_status)
+        const statusCounts: Record<string, number> = {};
+        for (const tag of STATUS_TAGS) {
+          const count = campaignSent.filter((e) => e.flags.includes(tag)).length;
+          if (count > 0) statusCounts[tag] = count;
+        }
+
+        // Count replies (inbox emails that match campaign sent subjects)
+        const campaignSubjects = new Set(campaignSent.map((e) => normalizeSubject(e.subject)));
+        const replies = inboxPage.emails.filter((e) => {
+          const ns = normalizeSubject(e.subject);
+          return campaignSubjects.has(ns);
+        });
+
+        // Per-step analytics
+        const stepAnalytics: Record<string, { sent: number; variants: Record<string, number> }> = {};
+        for (const [stepName, data] of steps) {
+          stepAnalytics[stepName] = {
+            sent: data.sent,
+            variants: Object.fromEntries(data.variants),
+          };
+        }
+
+        // Per-variant reply status breakdown
+        const variantStatuses: Record<string, Record<string, number>> = {};
+        for (const e of campaignSent) {
+          const variantFlag = e.flags.find((f) => f.startsWith("variant_")) || "unknown";
+          if (!variantStatuses[variantFlag]) variantStatuses[variantFlag] = { sent: 0 };
+          variantStatuses[variantFlag].sent++;
+          for (const tag of STATUS_TAGS) {
+            if (e.flags.includes(tag)) {
+              variantStatuses[variantFlag][tag] = (variantStatuses[variantFlag][tag] || 0) + 1;
+            }
+          }
+        }
+
+        const totalSent = campaignSent.length;
+        const totalReplied = Object.values(statusCounts).reduce((sum, c) => sum + c, 0);
+        const rate = (count: number) => Math.round((count / totalSent) * 10000) / 100;
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              campaign,
+              totalSent,
+              uniqueContacts: uniqueContacts.size,
+              totalReplied,
+              replyRate: rate(totalReplied),
+              repliesDetected: replies.length,
+              statuses: statusCounts,
+              statusRates: Object.fromEntries(
+                Object.entries(statusCounts).map(([k, v]) => [k, rate(v)])
+              ),
+              steps: stepAnalytics,
+              variants: variantStatuses,
+            }, null, 2),
+          }],
+        };
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Failed to get campaign analytics: ${errorMessage}` }],
           isError: true,
         };
       }

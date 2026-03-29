@@ -32,7 +32,7 @@ Outbound Tools uses **IMAP keywords** as a native tagging and classification lay
 
 **Why this matters:**
 
-- **Zero infrastructure.** Tags like `interested`, `bounced`, `complained` are stored as IMAP keywords on each message. The mailbox *is* the database.
+- **Zero infrastructure.** Tags like `interested`, `bounced`, `do_not_contact` are stored as IMAP keywords on each message. The mailbox *is* the database.
 - **Instant querying.** IMAP SEARCH natively supports keyword filtering. Fetching all positive replies or computing bounce rates is a single IMAP command, not a full-table scan.
 - **Portable and durable.** Tags live on the mail server. Switch clients, migrate tools, or read from any IMAP client. Your classification data follows the emails.
 - **No state to manage.** The `classified` keyword makes processing incremental. Each run only touches new emails, then marks them done. No cursor, no offset table, no checkpoint file.
@@ -46,29 +46,44 @@ If `ANTHROPIC_API_KEY` is not set, the endpoint returns 501 and you can classify
 
 Classification uses `list_threads` to deterministically match replies to sent emails by subject and sender, then Claude classifies the sentiment. Both the reply and the original sent email get tagged, so you can query from either side.
 
-### Tags
+### Reply Statuses
 
-Tags are IMAP keywords stored directly on each email message. The classifier assigns exactly one category tag per reply, plus `classified` to mark it as processed.
+Reply statuses are IMAP keywords stored directly on each email message. The classifier assigns exactly one status tag per reply, plus `classified` to mark it as processed. Use `set_reply_status` to set statuses manually, or `list_reply_statuses` to see all available statuses.
 
 | Tag | Meaning |
 |---|---|
 | `classified` | Email has been processed by the classifier |
-| `interested` | Positive reply: shows interest, agrees to meeting |
-| `complained` | Recipient complained about being contacted |
+| `interested` | Positive — shows interest, wants to learn more |
+| `meeting_request` | Explicitly asked for or accepted a meeting |
+| `information_request` | Asked for more details, pricing, or documentation |
+| `not_interested` | Polite decline, not a fit right now |
+| `wrong_person` | Not the right contact, may have referred someone else |
+| `do_not_contact` | Hard stop — hostile, legal, or compliance concern |
 | `out_of_office` | Auto-reply or out-of-office response |
 | `unsubscribed` | Asked to stop receiving emails |
 | `bounced` | Delivery failure or bounce notification |
+
+### Campaign Tags
+
+Campaigns use IMAP keywords for zero-storage tracking. When using `send_campaign_step`, emails are automatically tagged:
+
+| Tag pattern | Example | Meaning |
+|---|---|---|
+| `campaign_{name}` | `campaign_q1_launch` | Email belongs to this campaign |
+| `step_{n}` | `step_1` | Which sequence step was sent |
+| `variant_{name}` | `variant_a` | Which A/B variant was used |
 
 ### Tag Filter Syntax
 
 Both `list_sent_emails` and `list_received_emails` accept a `tag_filter` parameter with boolean expressions:
 
 ```
-interested                        -- has tag
-classified AND interested         -- has both
-NOT classified                    -- does not have tag
-complained OR unsubscribed        -- either tag
-(interested OR complained) AND classified  -- combine with parentheses
+interested                              -- has tag
+meeting_request OR interested           -- high-intent replies
+NOT classified                          -- unprocessed emails
+do_not_contact OR unsubscribed          -- hard stops
+campaign_q1_launch AND step_1           -- first step of a campaign
+(interested OR meeting_request) AND classified  -- combine with parentheses
 ```
 
 ## Available Tools
@@ -159,10 +174,26 @@ Remove a contact from one or more audience segments. Parameters: `email` (contac
 #### `list_audiences`
 List all audience segments with contacts. Scans all mailbox accounts and returns unique contacts per segment. Returns `{ segments: [{ name, count, contacts }] }`.
 
-### Metrics
+### Reply Statuses
 
-#### `list_metrics`
-Get bounce, complain, and interest rates for an email account. Counts tagged sent emails via IMAP SEARCH and returns rates as percentages of total sent.
+#### `list_reply_statuses`
+Returns all available reply classification statuses with descriptions.
+
+#### `set_reply_status`
+Set a reply's status (e.g. `interested`, `meeting_request`). Tags both the received reply and the matching sent email. Removes any previous status tag first (ensures one status at a time). Parameters: `email` (account), `uid` (reply in INBOX), `status`, `sent_uid` (optional, matching sent email).
+
+### Campaigns
+
+#### `send_campaign_step`
+Bulk send a campaign step to contacts with A/B variant support. Each email is tagged with `campaign_{name}`, `step_{n}`, and `variant_{name}`. Supports `{{firstName}}`, `{{lastName}}`, `{{email}}`, `{{company}}` template variables. Step 2+ with empty subject replies in the original thread. Skips contacts who already received the step. Parameters: `email` (account), `campaign`, `step`, `audience_segment`, `variants` (with name/weight/subject/body), `contacts`.
+
+#### `campaign_analytics`
+Full campaign report: total sent, unique contacts, reply rate, status breakdown (interested, meeting_request, etc.), per-step performance, per-variant A/B comparison. Parameters: `email` (account), `campaign` (name).
+
+### Analytics
+
+#### `email_account_analytics`
+Per-account analytics: total sent, total replied, reply rate, and breakdown by all reply statuses with rates.
 
 ## Environment Variables
 
