@@ -557,6 +557,43 @@ export async function removeAudienceSegments(
   }
 }
 
+// Removes audience segment flags from a contact's marker in the Contacts folder.
+// Deletes the marker entirely if no audience segments remain.
+export async function removeContactMarkerSegments(
+  mailbox: MailboxDetails,
+  contactEmail: string,
+  segments: string[]
+): Promise<void> {
+  const flagsToRemove = segments.map((s) => `${AUDIENCE_PREFIX}${s}`);
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    await ensureContactsFolder(client);
+    const lock = await client.getMailboxLock(CONTACTS_FOLDER);
+    try {
+      const existing = await client.search({ to: contactEmail }, { uid: true });
+      if (!existing || existing.length === 0) return;
+
+      const uid = existing[0];
+      // Remove the segment flags
+      await client.messageFlagsRemove({ uid }, flagsToRemove, { uid: true });
+
+      // Check if any audience flags remain
+      const msg = await client.fetchOne(String(uid), { flags: true }, { uid: true });
+      if (!msg) return;
+      const remainingAudience = Array.from(msg.flags || []).filter((f) => f.startsWith(AUDIENCE_PREFIX));
+      if (remainingAudience.length === 0) {
+        // No segments left — delete the marker
+        await client.messageDelete({ uid }, { uid: true });
+      }
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
 export interface AudienceSegment {
   name: string;
   contacts: string[];

@@ -9,7 +9,7 @@ import {
   fetchDrafts, saveDraft, deleteDraft, fetchAttachmentByUid,
   normalizeSubject, extractEmail, resolveDraftsFolder,
   saveCampaignConfig, loadCampaignConfig, listCampaignConfigs, deleteCampaignConfig,
-  upsertContactMarker, listAudienceSegmentsWithContacts, getContactMetadataByEmails,
+  upsertContactMarker, removeContactMarkerSegments, listAudienceSegmentsWithContacts, getContactMetadataByEmails,
 } from "@/lib/imap";
 import { sendEmail, composeDraft } from "@/lib/smtp";
 
@@ -348,10 +348,12 @@ export function registerMailpoolTools(server: McpServer) {
           for (const folder of ["INBOX", "SENT"] as const) {
             totalUntagged += await removeAudienceSegments(details, folder, email, segments);
           }
+          // Also remove from Contacts folder marker (delete marker if no segments remain)
+          await removeContactMarkerSegments(details, email, segments);
         }
         return {
           content: [
-            { type: "text", text: `Removed segments [${segments.join(", ")}] from ${email}. Untagged ${totalUntagged} messages across ${mailboxes.length} accounts.` },
+            { type: "text", text: `Removed segments [${segments.join(", ")}] from ${email}. Untagged ${totalUntagged} messages + updated contact marker across ${mailboxes.length} accounts.` },
           ],
         };
       } catch (err: unknown) {
