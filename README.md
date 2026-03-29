@@ -38,6 +38,72 @@ Outbound Tools uses **IMAP keywords** as a native tagging and classification lay
 - **No state to manage.** The `classified` keyword makes processing incremental. Each run only touches new emails, then marks them done. No cursor, no offset table, no checkpoint file.
 - **Works at scale.** Each account is independent. Add 10 or 1,000 mailboxes and the architecture stays the same. IMAP handles the storage and indexing.
 
+## Outbound Playbook
+
+A typical outbound campaign in 5 steps:
+
+### 1. Enroll contacts in an audience
+
+```
+add_to_audience({ email: "john@acme.com", segments: ["q1_launch"] })
+add_to_audience({ email: "jane@corp.io",  segments: ["q1_launch"] })
+```
+
+### 2. Create a campaign with steps and A/B variants
+
+```
+create_campaign({
+  email: "me@mycompany.com",
+  name: "q1_launch",
+  audience_segment: "q1_launch",
+  contacts: [
+    { email: "john@acme.com", firstName: "John", company: "Acme" },
+    { email: "jane@corp.io",  firstName: "Jane", company: "Corp" }
+  ],
+  sequence: [
+    {
+      step: 1, delay_days: 0,
+      variants: [
+        { name: "a", weight: 50, subject: "Quick question {{firstName}}", text: "Hi {{firstName}}, ..." },
+        { name: "b", weight: 50, subject: "{{company}} + us?", text: "Hey {{firstName}}, ..." }
+      ]
+    },
+    {
+      step: 2, delay_days: 3,
+      variants: [
+        { name: "a", weight: 100, subject: "", text: "Just following up on my last email..." }
+      ]
+    }
+  ],
+  skill: "classify-replies"
+})
+```
+
+Step 2 has an empty subject — it replies in the same thread as step 1. Variants with `weight: 50` each get ~50% of contacts for A/B testing.
+
+### 3. Start the campaign
+
+```
+start_campaign({ email: "me@mycompany.com", campaign: "q1_launch" })
+```
+
+Call `start_campaign` repeatedly (e.g. daily via cron). Each run:
+- Sends the next step to contacts whose delay has elapsed
+- Skips contacts who replied with a terminal status (`do_not_contact`, `unsubscribed`, `bounced`, `not_interested`, `wrong_person`)
+- Skips contacts who already completed all steps
+
+### 4. Classify replies
+
+Run the `/classify-replies` skill or hit `GET /api/classify` to auto-classify incoming replies into statuses like `interested`, `meeting_request`, `not_interested`, etc.
+
+### 5. Report on results
+
+```
+campaign_analytics({ email: "me@mycompany.com", campaign: "q1_launch" })
+```
+
+Returns: total sent, reply rate, status breakdown (interested, meeting_request, bounced...), per-step performance, and per-variant A/B comparison to see which variant wins.
+
 ### Auto-Classification
 
 If `ANTHROPIC_API_KEY` is set as an environment variable, the server exposes a `GET /api/classify` endpoint that automatically classifies replies using Claude Haiku. Set up a Railway cron or external scheduler to hit it periodically (e.g., daily).
@@ -184,8 +250,23 @@ Set a reply's status (e.g. `interested`, `meeting_request`). Tags both the recei
 
 ### Campaigns
 
+#### `create_campaign`
+Define a campaign: name, audience segment, contacts with metadata, multi-step sequence with A/B variants, and optional skill for auto-reply handling. Campaign config is stored as an IMAP draft — no external database. Parameters: `email` (account), `name`, `audience_segment`, `contacts`, `sequence` (steps with variants), `skill`.
+
+#### `list_campaigns`
+List all campaigns stored on an email account.
+
+#### `get_campaign`
+Get the full campaign config including sequence, contacts, and skill.
+
+#### `delete_campaign`
+Delete a campaign config.
+
+#### `start_campaign`
+Execute the campaign: sends the next pending step to each contact respecting delays, A/B variant weights, and terminal reply statuses. Idempotent — call repeatedly (e.g. daily via cron). Skips contacts who replied with `do_not_contact`, `unsubscribed`, `bounced`, `not_interested`, or `wrong_person`. Parameters: `email` (account), `campaign` (name).
+
 #### `send_campaign_step`
-Bulk send a campaign step to contacts with A/B variant support. Each email is tagged with `campaign_{name}`, `step_{n}`, and `variant_{name}`. Supports `{{firstName}}`, `{{lastName}}`, `{{email}}`, `{{company}}` template variables. Step 2+ with empty subject replies in the original thread. Skips contacts who already received the step. Parameters: `email` (account), `campaign`, `step`, `audience_segment`, `variants` (with name/weight/subject/body), `contacts`.
+Low-level tool: manually send a single campaign step to specific contacts with A/B variants. Useful when you want full control instead of using `start_campaign`. Parameters: `email` (account), `campaign`, `step`, `audience_segment`, `variants`, `contacts`.
 
 #### `campaign_analytics`
 Full campaign report: total sent, unique contacts, reply rate, status breakdown (interested, meeting_request, etc.), per-step performance, per-variant A/B comparison. Parameters: `email` (account), `campaign` (name).

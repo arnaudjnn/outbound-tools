@@ -937,6 +937,192 @@ export async function fetchAttachmentByUid(
   }
 }
 
+// --- Campaign config storage via IMAP drafts ---
+
+const CAMPAIGN_SUBJECT_PREFIX = "[campaign:";
+
+export interface CampaignVariant {
+  name: string;
+  weight: number;
+  subject: string;
+  text?: string;
+  html?: string;
+}
+
+export interface CampaignStep {
+  step: number;
+  delay_days: number;
+  variants: CampaignVariant[];
+}
+
+export interface CampaignContact {
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  company?: string;
+}
+
+export interface CampaignConfig {
+  name: string;
+  audience_segment: string;
+  skill?: string;
+  contacts: CampaignContact[];
+  sequence: CampaignStep[];
+  created_at: string;
+}
+
+// Saves a campaign config as a draft email in the Drafts folder.
+export async function saveCampaignConfig(
+  mailbox: MailboxDetails,
+  config: CampaignConfig
+): Promise<void> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const draftsFolder = await findDraftsFolder(client, mailbox.imapHost);
+
+    // Delete existing config draft for this campaign if any
+    const lock = await client.getMailboxLock(draftsFolder);
+    try {
+      const mb = client.mailbox;
+      const total = mb && typeof mb === "object" ? mb.exists : 0;
+      if (total > 0) {
+        for await (const msg of client.fetch("1:*", {
+          uid: true,
+          envelope: true,
+          flags: true,
+        })) {
+          if (!msg || !msg.envelope?.subject) continue;
+          if (msg.envelope.subject === `${CAMPAIGN_SUBJECT_PREFIX}${config.name}]`) {
+            await client.messageDelete({ uid: msg.uid }, { uid: true });
+            break;
+          }
+        }
+      }
+    } finally {
+      lock.release();
+    }
+
+    // Build and append the new config draft
+    const { default: MailComposer } = await import("nodemailer/lib/mail-composer");
+    const composer = new MailComposer({
+      from: `${mailbox.firstName} ${mailbox.lastName} <${mailbox.email}>`,
+      to: mailbox.email,
+      subject: `${CAMPAIGN_SUBJECT_PREFIX}${config.name}]`,
+      text: JSON.stringify(config, null, 2),
+    });
+    const raw: Buffer = await composer.compile().build();
+    await client.append(draftsFolder, raw, ["\\Draft", "\\Seen", "campaign_def"]);
+  } finally {
+    await client.logout();
+  }
+}
+
+// Loads a campaign config from the Drafts folder by name.
+export async function loadCampaignConfig(
+  mailbox: MailboxDetails,
+  name: string
+): Promise<CampaignConfig> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const draftsFolder = await findDraftsFolder(client, mailbox.imapHost);
+    const lock = await client.getMailboxLock(draftsFolder);
+    try {
+      const mb = client.mailbox;
+      const total = mb && typeof mb === "object" ? mb.exists : 0;
+      if (total === 0) throw new Error(`Campaign "${name}" not found`);
+
+      for await (const msg of client.fetch("1:*", {
+        uid: true,
+        envelope: true,
+        source: true,
+      })) {
+        if (!msg || !msg.envelope?.subject) continue;
+        if (msg.envelope.subject === `${CAMPAIGN_SUBJECT_PREFIX}${name}]`) {
+          if (!msg.source) throw new Error(`Campaign "${name}" has no content`);
+          const parsed = await simpleParser(msg.source);
+          return JSON.parse(parsed.text || "{}");
+        }
+      }
+      throw new Error(`Campaign "${name}" not found`);
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+// Lists all campaign configs from the Drafts folder.
+export async function listCampaignConfigs(
+  mailbox: MailboxDetails
+): Promise<Array<{ name: string; uid: number }>> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const draftsFolder = await findDraftsFolder(client, mailbox.imapHost);
+    const lock = await client.getMailboxLock(draftsFolder);
+    try {
+      const mb = client.mailbox;
+      const total = mb && typeof mb === "object" ? mb.exists : 0;
+      if (total === 0) return [];
+
+      const campaigns: Array<{ name: string; uid: number }> = [];
+      for await (const msg of client.fetch("1:*", {
+        uid: true,
+        envelope: true,
+        flags: true,
+      })) {
+        if (!msg || !msg.envelope?.subject) continue;
+        const subject = msg.envelope.subject;
+        if (subject.startsWith(CAMPAIGN_SUBJECT_PREFIX) && subject.endsWith("]")) {
+          const name = subject.slice(CAMPAIGN_SUBJECT_PREFIX.length, -1);
+          campaigns.push({ name, uid: msg.uid });
+        }
+      }
+      return campaigns;
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+// Deletes a campaign config from the Drafts folder.
+export async function deleteCampaignConfig(
+  mailbox: MailboxDetails,
+  name: string
+): Promise<void> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const draftsFolder = await findDraftsFolder(client, mailbox.imapHost);
+    const lock = await client.getMailboxLock(draftsFolder);
+    try {
+      const mb = client.mailbox;
+      const total = mb && typeof mb === "object" ? mb.exists : 0;
+      if (total === 0) return;
+
+      for await (const msg of client.fetch("1:*", {
+        uid: true,
+        envelope: true,
+      })) {
+        if (!msg || !msg.envelope?.subject) continue;
+        if (msg.envelope.subject === `${CAMPAIGN_SUBJECT_PREFIX}${name}]`) {
+          await client.messageDelete({ uid: msg.uid }, { uid: true });
+          return;
+        }
+      }
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
 // Gets full headers and body of a message for reply/forward operations.
 export async function getEmailHeaders(
   mailbox: MailboxDetails,

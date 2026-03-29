@@ -8,6 +8,7 @@ import {
   fetchEmailByUid, fetchEmailRawByUid, deleteEmail, getEmailHeaders,
   fetchDrafts, saveDraft, deleteDraft, fetchAttachmentByUid,
   normalizeSubject, extractEmail, resolveDraftsFolder,
+  saveCampaignConfig, loadCampaignConfig, listCampaignConfigs, deleteCampaignConfig,
 } from "@/lib/imap";
 import { sendEmail, composeDraft } from "@/lib/smtp";
 
@@ -1270,6 +1271,320 @@ export function registerMailpoolTools(server: McpServer) {
         const errorMessage = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: "text", text: `Failed to get campaign analytics: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // --- Campaign management tools ---
+
+  const TERMINAL_STATUSES = ["do_not_contact", "unsubscribed", "bounced", "not_interested", "wrong_person"];
+
+  server.tool(
+    "create_campaign",
+    {
+      email: z.string().describe("Email account that owns/sends the campaign"),
+      name: z.string().describe("Campaign name (lowercase, no spaces — used as tag)"),
+      audience_segment: z.string().describe("Audience segment to target (e.g. 'vip', 'general')"),
+      contacts: z.array(z.object({
+        email: z.string(),
+        firstName: z.string().optional(),
+        lastName: z.string().optional(),
+        company: z.string().optional(),
+      })).describe("Contacts with metadata for template personalization"),
+      sequence: z.array(z.object({
+        step: z.number().describe("Step number (1 = initial, 2+ = follow-ups)"),
+        delay_days: z.number().describe("Days to wait after previous step before sending"),
+        variants: z.array(z.object({
+          name: z.string().describe("Variant name (e.g. 'a', 'b')"),
+          weight: z.number().describe("Selection weight (e.g. 50 for 50%)"),
+          subject: z.string().describe("Subject line (supports {{firstName}}, {{lastName}}, {{email}}, {{company}}). Empty on step 2+ = reply in same thread."),
+          text: z.string().optional().describe("Plain text body with {{placeholder}} support"),
+          html: z.string().optional().describe("HTML body with {{placeholder}} support"),
+        })),
+      })).describe("Email sequence steps with A/B variants"),
+      skill: z.string().optional().describe("Skill to run for auto-reply handling (e.g. 'classify-replies')"),
+    },
+    async ({ email, name, audience_segment, contacts, sequence, skill }) => {
+      const mailbox = await getMailboxByEmail(email);
+      try {
+        const config = {
+          name,
+          audience_segment,
+          contacts,
+          sequence,
+          skill,
+          created_at: new Date().toISOString(),
+        };
+        await saveCampaignConfig(mailbox, config);
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              campaign: name,
+              audience_segment,
+              contacts: contacts.length,
+              steps: sequence.length,
+              totalVariants: sequence.reduce((sum, s) => sum + s.variants.length, 0),
+              skill: skill || "none",
+              status: "created",
+            }, null, 2),
+          }],
+        };
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Failed to create campaign: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "list_campaigns",
+    {
+      email: z.string().describe("Email account to list campaigns for"),
+    },
+    async ({ email }) => {
+      const mailbox = await getMailboxByEmail(email);
+      try {
+        const campaigns = await listCampaignConfigs(mailbox);
+        return {
+          content: [{ type: "text", text: JSON.stringify({ campaigns }, null, 2) }],
+        };
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Failed to list campaigns: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "get_campaign",
+    {
+      email: z.string().describe("Email account that owns the campaign"),
+      campaign: z.string().describe("Campaign name"),
+    },
+    async ({ email, campaign }) => {
+      const mailbox = await getMailboxByEmail(email);
+      try {
+        const config = await loadCampaignConfig(mailbox, campaign);
+        return {
+          content: [{ type: "text", text: JSON.stringify(config, null, 2) }],
+        };
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Failed to get campaign: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "delete_campaign",
+    {
+      email: z.string().describe("Email account that owns the campaign"),
+      campaign: z.string().describe("Campaign name to delete"),
+    },
+    async ({ email, campaign }) => {
+      const mailbox = await getMailboxByEmail(email);
+      try {
+        await deleteCampaignConfig(mailbox, campaign);
+        return {
+          content: [{ type: "text", text: `Campaign "${campaign}" deleted.` }],
+        };
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Failed to delete campaign: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "start_campaign",
+    {
+      email: z.string().describe("Email account to send from"),
+      campaign: z.string().describe("Campaign name to execute"),
+    },
+    async ({ email, campaign }) => {
+      const mailbox = await getMailboxByEmail(email);
+
+      try {
+        const config = await loadCampaignConfig(mailbox, campaign);
+        const campaignTag = `campaign_${config.name}`;
+        const sortedSteps = [...config.sequence].sort((a, b) => a.step - b.step);
+
+        // Fetch all sent emails tagged with this campaign
+        const sentPage = await fetchSentEmails(mailbox, 500);
+        const campaignSent = sentPage.emails.filter((e) => e.flags.includes(campaignTag));
+
+        // Fetch inbox to check for terminal reply statuses
+        const inboxPage = await fetchEmails(mailbox, "INBOX", 500);
+
+        // Pick variant by weighted random selection
+        function pickVariant(variants: typeof config.sequence[0]["variants"]) {
+          const totalWeight = variants.reduce((sum, v) => sum + v.weight, 0);
+          let r = Math.random() * totalWeight;
+          for (const v of variants) {
+            r -= v.weight;
+            if (r <= 0) return v;
+          }
+          return variants[variants.length - 1];
+        }
+
+        function interpolate(template: string, contact: typeof config.contacts[0]) {
+          return template
+            .replace(/\{\{firstName\}\}/g, contact.firstName || "")
+            .replace(/\{\{lastName\}\}/g, contact.lastName || "")
+            .replace(/\{\{email\}\}/g, contact.email)
+            .replace(/\{\{company\}\}/g, contact.company || "");
+        }
+
+        const results: Array<{ contact: string; step: number; variant: string; status: string }> = [];
+        const now = Date.now();
+
+        for (const contact of config.contacts) {
+          const contactEmail = contact.email.toLowerCase();
+
+          // Check if contact has a terminal reply status
+          const contactReplies = inboxPage.emails.filter(
+            (e) => extractEmail(e.from) === contactEmail
+          );
+          const hasTerminalStatus = contactReplies.some(
+            (e) => e.flags.some((f) => TERMINAL_STATUSES.includes(f))
+          );
+          if (hasTerminalStatus) {
+            results.push({ contact: contact.email, step: 0, variant: "-", status: "skipped_terminal_status" });
+            continue;
+          }
+
+          // Find which steps this contact has already received
+          const contactSent = campaignSent.filter(
+            (e) => e.to.toLowerCase().includes(contactEmail)
+          );
+          const completedSteps = new Set<number>();
+          let lastSentDate = 0;
+
+          for (const e of contactSent) {
+            const stepFlag = e.flags.find((f) => f.startsWith("step_"));
+            if (stepFlag) {
+              const stepNum = parseInt(stepFlag.replace("step_", ""), 10);
+              completedSteps.add(stepNum);
+              const sentDate = new Date(e.date).getTime();
+              if (sentDate > lastSentDate) lastSentDate = sentDate;
+            }
+          }
+
+          // Find next step to send
+          const nextStep = sortedSteps.find((s) => !completedSteps.has(s.step));
+          if (!nextStep) {
+            results.push({ contact: contact.email, step: 0, variant: "-", status: "completed_all_steps" });
+            continue;
+          }
+
+          // Check delay
+          if (nextStep.step > 1 && lastSentDate > 0) {
+            const daysSinceLast = (now - lastSentDate) / (1000 * 60 * 60 * 24);
+            if (daysSinceLast < nextStep.delay_days) {
+              results.push({
+                contact: contact.email,
+                step: nextStep.step,
+                variant: "-",
+                status: `waiting_delay (${Math.ceil(nextStep.delay_days - daysSinceLast)}d remaining)`,
+              });
+              continue;
+            }
+          }
+
+          // Send
+          const variant = pickVariant(nextStep.variants);
+          const variantTag = `variant_${variant.name}`;
+          const stepTag = `step_${nextStep.step}`;
+          const subject = interpolate(variant.subject, contact);
+          const text = variant.text ? interpolate(variant.text, contact) : undefined;
+          const html = variant.html ? interpolate(variant.html, contact) : undefined;
+
+          if (!text && !html) {
+            results.push({ contact: contact.email, step: nextStep.step, variant: variant.name, status: "skipped_no_body" });
+            continue;
+          }
+
+          try {
+            let result;
+
+            // Step 2+ with empty subject = reply in thread
+            if (nextStep.step > 1 && !variant.subject) {
+              const originalSent = contactSent.find((e) => e.flags.includes("step_1"));
+              if (originalSent) {
+                const sentFolder = await resolveFolder(mailbox, "SENT");
+                const headers = await getEmailHeaders(mailbox, sentFolder, originalSent.uid);
+                const reSubject = headers.subject.match(/^re:/i) ? headers.subject : `Re: ${headers.subject}`;
+                const references = [headers.references, headers.messageId].filter(Boolean).join(" ");
+                result = await sendEmail(mailbox, {
+                  to: [contact.email],
+                  subject: reSubject,
+                  text,
+                  html,
+                  inReplyTo: headers.messageId,
+                  references,
+                });
+              } else {
+                results.push({ contact: contact.email, step: nextStep.step, variant: variant.name, status: "skipped_no_original_thread" });
+                continue;
+              }
+            } else {
+              result = await sendEmail(mailbox, { to: [contact.email], subject, text, html });
+            }
+
+            await appendToSent(mailbox, result.raw);
+
+            // Tag the sent email
+            const recentSent = await fetchSentEmails(mailbox, 5);
+            const justSent = recentSent.emails.find(
+              (e) => e.to.toLowerCase().includes(contactEmail)
+            );
+            if (justSent) {
+              const sentFolder = await resolveFolder(mailbox, "SENT");
+              await setEmailFlag(mailbox, sentFolder, justSent.uid, campaignTag);
+              await setEmailFlag(mailbox, sentFolder, justSent.uid, stepTag);
+              await setEmailFlag(mailbox, sentFolder, justSent.uid, variantTag);
+            }
+
+            results.push({ contact: contact.email, step: nextStep.step, variant: variant.name, status: "sent" });
+          } catch (err: unknown) {
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            results.push({ contact: contact.email, step: nextStep.step, variant: variant.name, status: `error: ${errorMessage}` });
+          }
+        }
+
+        const sent = results.filter((r) => r.status === "sent").length;
+        const skipped = results.filter((r) => r.status.startsWith("skipped") || r.status.startsWith("waiting") || r.status.startsWith("completed")).length;
+        const errors = results.filter((r) => r.status.startsWith("error")).length;
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              campaign: config.name,
+              summary: { sent, skipped, errors, total: config.contacts.length },
+              results,
+            }, null, 2),
+          }],
+        };
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Failed to start campaign: ${errorMessage}` }],
           isError: true,
         };
       }
