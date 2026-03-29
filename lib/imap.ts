@@ -213,6 +213,37 @@ export interface EmailMessage {
   preview: string;
 }
 
+export interface EmailAttachmentMeta {
+  index: number;
+  filename: string;
+  contentType: string;
+  size: number;
+}
+
+export interface EmailDetail extends EmailMessage {
+  text: string;
+  html: string;
+  cc: string;
+  messageId: string;
+  inReplyTo: string;
+  references: string;
+  attachments: EmailAttachmentMeta[];
+}
+
+export interface EmailHeaders {
+  messageId: string;
+  inReplyTo: string;
+  references: string;
+  subject: string;
+  from: string;
+  to: string;
+  cc: string;
+  date: string;
+  text: string;
+  html: string;
+  attachments: Array<{ filename: string; content: Buffer; contentType: string }>;
+}
+
 export interface EmailPage {
   emails: EmailMessage[];
   total: number;
@@ -631,6 +662,325 @@ export async function fetchUnclassifiedEmails(
       }
 
       return messages.reverse();
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+// Fetches a single email by UID with full body, attachments metadata, and headers.
+export async function fetchEmailByUid(
+  mailbox: MailboxDetails,
+  folder: string,
+  uid: number
+): Promise<EmailDetail> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock(folder);
+    try {
+      const msg = await client.fetchOne(String(uid), {
+        uid: true,
+        flags: true,
+        envelope: true,
+        source: true,
+      }, { uid: true });
+
+      if (!msg || !msg.source) throw new Error(`Message UID ${uid} not found or has no source`);
+      const parsed = await simpleParser(msg.source);
+
+      const attachments: EmailAttachmentMeta[] = (parsed.attachments || []).map((a, i) => ({
+        index: i,
+        filename: a.filename || `attachment-${i}`,
+        contentType: a.contentType || "application/octet-stream",
+        size: a.size || 0,
+      }));
+
+      return {
+        uid: msg.uid,
+        flags: Array.from(msg.flags || []),
+        subject: parsed.subject || "(no subject)",
+        from: parsed.from?.text || "",
+        to: parsed.to
+          ? Array.isArray(parsed.to)
+            ? parsed.to.map((a) => a.text).join(", ")
+            : parsed.to.text
+          : "",
+        cc: parsed.cc
+          ? Array.isArray(parsed.cc)
+            ? parsed.cc.map((a) => a.text).join(", ")
+            : parsed.cc.text
+          : "",
+        date: parsed.date?.toISOString() || "",
+        preview: (parsed.text || "").slice(0, 200),
+        text: parsed.text || "",
+        html: parsed.html || "",
+        messageId: parsed.messageId || "",
+        inReplyTo: parsed.inReplyTo || "",
+        references: Array.isArray(parsed.references)
+          ? parsed.references.join(" ")
+          : parsed.references || "",
+        attachments,
+      };
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+// Fetches raw RFC822 source of a single email by UID.
+export async function fetchEmailRawByUid(
+  mailbox: MailboxDetails,
+  folder: string,
+  uid: number
+): Promise<Buffer> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock(folder);
+    try {
+      const msg = await client.fetchOne(String(uid), { source: true }, { uid: true });
+      if (!msg || !msg.source) throw new Error(`Message UID ${uid} not found or has no source`);
+      return msg.source;
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+// Deletes a message by UID (flags \Deleted + expunge).
+export async function deleteEmail(
+  mailbox: MailboxDetails,
+  folder: string,
+  uid: number
+): Promise<void> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock(folder);
+    try {
+      await client.messageDelete({ uid }, { uid: true });
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+// Finds the Drafts folder by special-use flag, with host-based fallback.
+export async function findDraftsFolder(
+  client: ImapFlow,
+  host: string
+): Promise<string> {
+  try {
+    const folders = await client.list();
+    const drafts = folders.find((f) => f.specialUse === "\\Drafts");
+    if (drafts) return drafts.path;
+  } catch {
+    // fall through to host-based mapping
+  }
+  const h = host.toLowerCase();
+  if (h.includes("gmail")) return "[Gmail]/Drafts";
+  return "Drafts";
+}
+
+// Resolves the Drafts folder for a mailbox.
+export async function resolveDraftsFolder(
+  mailbox: MailboxDetails
+): Promise<string> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    return await findDraftsFolder(client, mailbox.imapHost);
+  } finally {
+    await client.logout();
+  }
+}
+
+// Fetches drafts from the Drafts folder with pagination.
+export async function fetchDrafts(
+  mailbox: MailboxDetails,
+  limit: number,
+  page: number = 1
+): Promise<EmailPage> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const draftsFolder = await findDraftsFolder(client, mailbox.imapHost);
+    const lock = await client.getMailboxLock(draftsFolder);
+    try {
+      const mb = client.mailbox;
+      const totalMessages = mb && typeof mb === "object" ? mb.exists : 0;
+      const totalPages = Math.max(1, Math.ceil(totalMessages / limit));
+
+      if (totalMessages === 0) {
+        return { emails: [], total: 0, page, limit, totalPages: 1 };
+      }
+
+      const offset = (page - 1) * limit;
+      const end = totalMessages - offset;
+      const start = Math.max(1, end - limit + 1);
+
+      if (end < 1) {
+        return { emails: [], total: totalMessages, page, limit, totalPages };
+      }
+
+      const range = `${start}:${end}`;
+      const messages: EmailMessage[] = [];
+
+      for await (const msg of client.fetch(range, {
+        uid: true,
+        flags: true,
+        envelope: true,
+        source: true,
+      })) {
+        if (!msg.source) continue;
+        const parsed = await simpleParser(msg.source);
+        messages.push({
+          uid: msg.uid,
+          flags: Array.from(msg.flags || []),
+          subject: parsed.subject || "(no subject)",
+          from: parsed.from?.text || "",
+          to: parsed.to
+            ? Array.isArray(parsed.to)
+              ? parsed.to.map((a) => a.text).join(", ")
+              : parsed.to.text
+            : "",
+          date: parsed.date?.toISOString() || "",
+          preview: (parsed.text || "").slice(0, 200),
+        });
+      }
+
+      messages.reverse();
+      return { emails: messages, total: totalMessages, page, limit, totalPages };
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+// Saves a raw RFC822 message as a draft in the Drafts folder.
+export async function saveDraft(
+  mailbox: MailboxDetails,
+  raw: Buffer
+): Promise<void> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const draftsFolder = await findDraftsFolder(client, mailbox.imapHost);
+    await client.append(draftsFolder, raw, ["\\Draft", "\\Seen"]);
+  } finally {
+    await client.logout();
+  }
+}
+
+// Deletes a draft by UID from the Drafts folder.
+export async function deleteDraft(
+  mailbox: MailboxDetails,
+  uid: number
+): Promise<void> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const draftsFolder = await findDraftsFolder(client, mailbox.imapHost);
+    const lock = await client.getMailboxLock(draftsFolder);
+    try {
+      await client.messageDelete({ uid }, { uid: true });
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+// Fetches a specific attachment from an email by UID and attachment index.
+export async function fetchAttachmentByUid(
+  mailbox: MailboxDetails,
+  folder: string,
+  uid: number,
+  attachmentIndex: number
+): Promise<{ filename: string; contentType: string; content: string; size: number }> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock(folder);
+    try {
+      const msg = await client.fetchOne(String(uid), { source: true }, { uid: true });
+      if (!msg || !msg.source) throw new Error(`Message UID ${uid} not found`);
+      const parsed = await simpleParser(msg.source);
+      const attachments = parsed.attachments || [];
+      if (attachmentIndex < 0 || attachmentIndex >= attachments.length) {
+        throw new Error(`Attachment index ${attachmentIndex} out of range (0-${attachments.length - 1})`);
+      }
+      const att = attachments[attachmentIndex];
+      return {
+        filename: att.filename || `attachment-${attachmentIndex}`,
+        contentType: att.contentType || "application/octet-stream",
+        content: att.content.toString("base64"),
+        size: att.size || 0,
+      };
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout();
+  }
+}
+
+// Gets full headers and body of a message for reply/forward operations.
+export async function getEmailHeaders(
+  mailbox: MailboxDetails,
+  folder: string,
+  uid: number
+): Promise<EmailHeaders> {
+  const client = createImapClient(mailbox);
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock(folder);
+    try {
+      const msg = await client.fetchOne(String(uid), { source: true }, { uid: true });
+      if (!msg || !msg.source) throw new Error(`Message UID ${uid} not found`);
+      const parsed = await simpleParser(msg.source);
+
+      const attachments = (parsed.attachments || []).map((a) => ({
+        filename: a.filename || "attachment",
+        content: a.content,
+        contentType: a.contentType || "application/octet-stream",
+      }));
+
+      return {
+        messageId: parsed.messageId || "",
+        inReplyTo: parsed.inReplyTo || "",
+        references: Array.isArray(parsed.references)
+          ? parsed.references.join(" ")
+          : parsed.references || "",
+        subject: parsed.subject || "",
+        from: parsed.from?.text || "",
+        to: parsed.to
+          ? Array.isArray(parsed.to)
+            ? parsed.to.map((a) => a.text).join(", ")
+            : parsed.to.text
+          : "",
+        cc: parsed.cc
+          ? Array.isArray(parsed.cc)
+            ? parsed.cc.map((a) => a.text).join(", ")
+            : parsed.cc.text
+          : "",
+        date: parsed.date?.toISOString() || "",
+        text: parsed.text || "",
+        html: parsed.html || "",
+        attachments,
+      };
     } finally {
       lock.release();
     }

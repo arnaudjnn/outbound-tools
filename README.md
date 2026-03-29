@@ -44,7 +44,7 @@ If `ANTHROPIC_API_KEY` is set as an environment variable, the server exposes a `
 
 If `ANTHROPIC_API_KEY` is not set, the endpoint returns 501 and you can classify manually using the `/classify-replies` agent skill.
 
-Classification uses `find_reply_threads` to deterministically match replies to sent emails by subject and sender, then Claude classifies the sentiment. Both the reply and the original sent email get tagged, so you can query from either side.
+Classification uses `list_threads` to deterministically match replies to sent emails by subject and sender, then Claude classifies the sentiment. Both the reply and the original sent email get tagged, so you can query from either side.
 
 ### Tags
 
@@ -73,37 +73,95 @@ complained OR unsubscribed        -- either tag
 
 ## Available Tools
 
-### `list_email_accounts`
+### Email Accounts
+
+#### `list_email_accounts`
 List all registered email mailboxes with their status and domain info.
 
-### `send_email`
+### Sending & Replying
+
+#### `send_email`
 Send an email via SMTP from a registered mailbox. Supports plain text, HTML, CC, and BCC. A copy is automatically saved to the Sent folder via IMAP.
 
-### `list_sent_emails`
-Fetch sent emails from a mailbox's Sent folder via IMAP. Supports `limit` (default 50), `page` (default 1, most recent first), and `tag_filter`.
+#### `reply_to_email`
+Reply to an email in-thread. Automatically sets `In-Reply-To` and `References` headers for proper threading. Parameters: `email` (account), `uid` (message to reply to), `folder`, `text`/`html`.
 
-### `list_received_emails`
+#### `reply_all_to_email`
+Reply-all to an email. Replies to the original sender and CCs all other recipients (minus yourself). Same threading headers as `reply_to_email`.
+
+#### `forward_email`
+Forward an email to new recipients. Includes the original body (quoted) and re-attaches all original attachments. Parameters: `email` (account), `uid`, `folder`, `to` (recipients), optional `text`/`html`.
+
+### Reading Emails
+
+#### `list_received_emails`
 Fetch received emails from a mailbox's INBOX via IMAP. Supports `limit` (default 50), `page` (default 1, most recent first), and `tag_filter`.
 
-### `find_reply_threads`
+#### `list_sent_emails`
+Fetch sent emails from a mailbox's Sent folder via IMAP. Supports `limit` (default 50), `page` (default 1, most recent first), and `tag_filter`.
+
+#### `get_email`
+Fetch a single email by UID with full body (text + HTML), attachment metadata, and message headers (Message-ID, In-Reply-To, References). Parameters: `email` (account), `uid`, `folder` (INBOX or SENT).
+
+#### `get_email_raw`
+Fetch the raw RFC822 source of an email. Parameters: `email` (account), `uid`, `folder`.
+
+#### `delete_email`
+Delete an email by UID. Parameters: `email` (account), `uid`, `folder`.
+
+#### `get_attachment`
+Download an attachment from an email. Returns base64-encoded content. Parameters: `email` (account), `uid`, `index` (0-based, from `get_email` attachments list), `folder`.
+
+### Threads
+
+#### `list_threads`
 Find received emails that are replies to sent emails. Matches by normalized subject and sender/recipient overlap. Returns matched pairs (with both sent and received email details) and unmatched UIDs. Filters to unclassified emails by default.
 
-### `add_email_tag`
+#### `get_thread`
+Get all messages in a conversation thread by subject, across both INBOX and Sent. Groups by normalized subject (strips Re:/Fwd: prefixes). Returns messages sorted chronologically with sender list. Parameters: `email` (account), `subject`, `limit`.
+
+### Drafts
+
+#### `list_drafts`
+List drafts from the Drafts folder. Supports `limit` (default 50) and `page` (default 1, most recent first).
+
+#### `get_draft`
+Fetch a single draft by UID with full body and attachment metadata.
+
+#### `create_draft`
+Compose and save a draft to the Drafts folder without sending. Parameters: `email` (account), `to`, `subject`, `text`/`html`, `cc`, `bcc`.
+
+#### `update_draft`
+Replace an existing draft with new content. IMAP doesn't support in-place edits, so this deletes the old draft and saves a new one. Parameters: `email` (account), `uid` (existing draft), `to`, `subject`, `text`/`html`, `cc`, `bcc`.
+
+#### `delete_draft`
+Delete a draft by UID from the Drafts folder.
+
+#### `send_draft`
+Send an existing draft. Sends via SMTP, copies to Sent folder, and removes from Drafts. Parameters: `email` (account), `uid`.
+
+### Tagging
+
+#### `add_email_tag`
 Add an IMAP keyword to a message. Parameters: `email` (account), `uid` (message UID), `tag` (keyword), `folder` (INBOX or SENT, default INBOX).
 
-### `remove_email_tag`
+#### `remove_email_tag`
 Remove an IMAP keyword from a message. Parameters: `email` (account), `uid` (message UID), `tag` (keyword), `folder` (INBOX or SENT, default INBOX).
 
-### `add_to_audience`
+### Audiences
+
+#### `add_to_audience`
 Add a contact to one or more audience segments. Searches all mailbox accounts for messages from/to that contact and tags them. Parameters: `email` (contact email), `segments` (array, default `["general"]`). Stores segments as `audience_` prefixed IMAP keywords.
 
-### `remove_from_audience`
+#### `remove_from_audience`
 Remove a contact from one or more audience segments. Parameters: `email` (contact email), `segments` (array). Removes tags across all mailbox accounts.
 
-### `list_audiences`
+#### `list_audiences`
 List all audience segments with contacts. Scans all mailbox accounts and returns unique contacts per segment. Returns `{ segments: [{ name, count, contacts }] }`.
 
-### `list_metrics`
+### Metrics
+
+#### `list_metrics`
 Get bounce, complain, and interest rates for an email account. Counts tagged sent emails via IMAP SEARCH and returns rates as percentages of total sent.
 
 ## Environment Variables

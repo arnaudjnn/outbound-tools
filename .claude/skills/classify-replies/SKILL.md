@@ -16,7 +16,7 @@ Classify received emails and tag both the reply and the original sent email.
 ## Instructions
 
 1. Call `list_email_accounts` to get all active accounts.
-2. For each account, call `find_reply_threads` with the account email.
+2. For each account, call `list_threads` with the account email.
 3. If `totalChecked` is 0, skip to the next account.
 4. For each match in `matches`:
    - Classify the reply into exactly one category: `interested`, `complained`, `out_of_office`, `unsubscribed`, `bounced`, or none.

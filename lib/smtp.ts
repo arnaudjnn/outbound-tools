@@ -9,6 +9,9 @@ interface SendEmailParams {
   html?: string;
   cc?: string[];
   bcc?: string[];
+  inReplyTo?: string;
+  references?: string;
+  attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
 }
 
 export async function sendEmail(mailbox: MailboxDetails, params: SendEmailParams) {
@@ -22,7 +25,7 @@ export async function sendEmail(mailbox: MailboxDetails, params: SendEmailParams
     },
   });
 
-  const mailOptions = {
+  const mailOptions: Record<string, unknown> = {
     from: `${mailbox.firstName} ${mailbox.lastName} <${mailbox.email}>`,
     to: params.to.join(", "),
     cc: params.cc?.join(", "),
@@ -31,6 +34,16 @@ export async function sendEmail(mailbox: MailboxDetails, params: SendEmailParams
     text: params.text,
     html: params.html,
   };
+
+  if (params.inReplyTo) mailOptions.inReplyTo = params.inReplyTo;
+  if (params.references) mailOptions.references = params.references;
+  if (params.attachments?.length) {
+    mailOptions.attachments = params.attachments.map((a) => ({
+      filename: a.filename,
+      content: a.content,
+      contentType: a.contentType,
+    }));
+  }
 
   const info = await transport.sendMail(mailOptions);
 
@@ -44,4 +57,30 @@ export async function sendEmail(mailbox: MailboxDetails, params: SendEmailParams
     rejected: info.rejected as string[],
     raw,
   };
+}
+
+// Builds a raw RFC822 message without sending (for saving as draft).
+export async function composeDraft(mailbox: MailboxDetails, params: SendEmailParams): Promise<Buffer> {
+  const mailOptions: Record<string, unknown> = {
+    from: `${mailbox.firstName} ${mailbox.lastName} <${mailbox.email}>`,
+    to: params.to.join(", "),
+    cc: params.cc?.join(", "),
+    bcc: params.bcc?.join(", "),
+    subject: params.subject,
+    text: params.text,
+    html: params.html,
+  };
+
+  if (params.inReplyTo) mailOptions.inReplyTo = params.inReplyTo;
+  if (params.references) mailOptions.references = params.references;
+  if (params.attachments?.length) {
+    mailOptions.attachments = params.attachments.map((a) => ({
+      filename: a.filename,
+      content: a.content,
+      contentType: a.contentType,
+    }));
+  }
+
+  const composer = new MailComposer(mailOptions);
+  return composer.compile().build();
 }
