@@ -265,9 +265,6 @@ Delete a campaign config.
 #### `start_campaign`
 Execute the campaign: sends the next pending step to each contact respecting delays, A/B variant weights, and terminal reply statuses. Idempotent — call repeatedly (e.g. daily via cron). Skips contacts who replied with `do_not_contact`, `unsubscribed`, `bounced`, `not_interested`, or `wrong_person`. Parameters: `email` (account), `campaign` (name).
 
-#### `send_campaign_step`
-Low-level tool: manually send a single campaign step to specific contacts with A/B variants. Useful when you want full control instead of using `start_campaign`. Parameters: `email` (account), `campaign`, `step`, `audience_segment`, `variants`, `contacts`.
-
 #### `campaign_analytics`
 Full campaign report: total sent, unique contacts, reply rate, status breakdown (interested, meeting_request, etc.), per-step performance, per-variant A/B comparison. Parameters: `email` (account), `campaign` (name).
 
