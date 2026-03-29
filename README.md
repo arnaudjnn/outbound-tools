@@ -46,23 +46,19 @@ list_audiences()
 
 ### Step 2 — Create a campaign
 
-A campaign defines: who to send to, what to send (multi-step sequence with A/B variants), and how to handle replies (skill attachment).
+A campaign links an audience segment to a multi-step email sequence with A/B variants. When the campaign runs, it pulls contacts from the audience automatically.
 
 ```
 create_campaign({
   email: "me@mycompany.com",
   name: "q1_launch",
   audience_segment: "q1_launch",
-  contacts: [
-    { email: "john@acme.com", firstName: "John", company: "Acme" },
-    { email: "jane@corp.io",  firstName: "Jane", company: "Corp" }
-  ],
   sequence: [
     {
       step: 1, delay_days: 0,
       variants: [
-        { name: "a", weight: 50, subject: "Quick question {{firstName}}", text: "Hi {{firstName}}, I saw {{company}} is..." },
-        { name: "b", weight: 50, subject: "{{company}} + us?", text: "Hey {{firstName}}, we help companies like {{company}}..." }
+        { name: "a", weight: 50, subject: "Quick question", text: "Hi, I saw your company is..." },
+        { name: "b", weight: 50, subject: "Partnership idea", text: "Hey, we help companies like yours..." }
       ]
     },
     {
@@ -77,17 +73,16 @@ create_campaign({
         { name: "a", weight: 100, subject: "", text: "Last try — would love 15 min to show you..." }
       ]
     }
-  ],
-  skill: "classify-replies"
+  ]
 })
 ```
 
 **How sequences work:**
 - **Steps** execute in order. `delay_days` is the number of days to wait after the previous step before sending.
 - **Variants** enable A/B testing. Each variant has a `weight` — with two variants at `weight: 50`, each gets ~50% of contacts. Use `weight: 100` for a single variant (no split).
-- **Template variables** — `{{firstName}}`, `{{lastName}}`, `{{email}}`, `{{company}}` are replaced with each contact's data.
+- **Template variables** — `{{email}}` is replaced with the contact's email address.
 - **Empty subject on step 2+** means "reply in the same thread" — the email is sent as a reply to the step 1 email with proper `In-Reply-To` and `References` headers, so it threads correctly in the recipient's inbox.
-- **Skill attachment** — the `skill` field references a skill (like `classify-replies`) that should be run to handle incoming replies. This is a convention for the agent orchestrating the campaign.
+- **Audience-driven** — the campaign doesn't store contacts. It reads them from the audience segment at runtime, so adding/removing contacts from the segment updates who gets sent to.
 
 The campaign config is stored as an IMAP draft on the sender account — no external storage.
 
@@ -232,7 +227,7 @@ campaign_q1_launch AND step_1           -- first step of a campaign
 
 | Tool | Description |
 |---|---|
-| `create_campaign` | Define a campaign with audience, multi-step sequence, A/B variants, and skill attachment |
+| `create_campaign` | Define a campaign with audience segment and multi-step sequence with A/B variants |
 | `start_campaign` | Execute the campaign — sends next pending steps, respects delays and terminal statuses |
 | `get_campaign` | Get the full campaign config |
 | `list_campaigns` | List all campaigns on an account |

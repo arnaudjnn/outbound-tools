@@ -1133,35 +1133,26 @@ export function registerMailpoolTools(server: McpServer) {
     {
       email: z.string().describe("Email account that owns/sends the campaign"),
       name: z.string().describe("Campaign name (lowercase, no spaces — used as tag)"),
-      audience_segment: z.string().describe("Audience segment to target (e.g. 'vip', 'general')"),
-      contacts: z.array(z.object({
-        email: z.string(),
-        firstName: z.string().optional(),
-        lastName: z.string().optional(),
-        company: z.string().optional(),
-      })).describe("Contacts with metadata for template personalization"),
+      audience_segment: z.string().describe("Audience segment to target (e.g. 'vip', 'general'). Contacts are pulled from this segment when the campaign starts."),
       sequence: z.array(z.object({
         step: z.number().describe("Step number (1 = initial, 2+ = follow-ups)"),
         delay_days: z.number().describe("Days to wait after previous step before sending"),
         variants: z.array(z.object({
           name: z.string().describe("Variant name (e.g. 'a', 'b')"),
           weight: z.number().describe("Selection weight (e.g. 50 for 50%)"),
-          subject: z.string().describe("Subject line (supports {{firstName}}, {{lastName}}, {{email}}, {{company}}). Empty on step 2+ = reply in same thread."),
-          text: z.string().optional().describe("Plain text body with {{placeholder}} support"),
-          html: z.string().optional().describe("HTML body with {{placeholder}} support"),
+          subject: z.string().describe("Subject line (supports {{email}}). Empty on step 2+ = reply in same thread."),
+          text: z.string().optional().describe("Plain text body with {{email}} support"),
+          html: z.string().optional().describe("HTML body with {{email}} support"),
         })),
       })).describe("Email sequence steps with A/B variants"),
-      skill: z.string().optional().describe("Skill to run for auto-reply handling (e.g. 'classify-replies')"),
     },
-    async ({ email, name, audience_segment, contacts, sequence, skill }) => {
+    async ({ email, name, audience_segment, sequence }) => {
       const mailbox = await getMailboxByEmail(email);
       try {
         const config = {
           name,
           audience_segment,
-          contacts,
           sequence,
-          skill,
           created_at: new Date().toISOString(),
         };
         await saveCampaignConfig(mailbox, config);
@@ -1171,10 +1162,8 @@ export function registerMailpoolTools(server: McpServer) {
             text: JSON.stringify({
               campaign: name,
               audience_segment,
-              contacts: contacts.length,
               steps: sequence.length,
               totalVariants: sequence.reduce((sum, s) => sum + s.variants.length, 0),
-              skill: skill || "none",
               status: "created",
             }, null, 2),
           }],
@@ -1271,6 +1260,28 @@ export function registerMailpoolTools(server: McpServer) {
         const campaignTag = `campaign_${config.name}`;
         const sortedSteps = [...config.sequence].sort((a, b) => a.step - b.step);
 
+        // Pull contacts from audience segment
+        const mailboxes = await listMailboxes();
+        const mergedContacts = new Set<string>();
+        for (const mb of mailboxes) {
+          const details = await getMailboxById(mb.id);
+          for (const folder of ["INBOX", "SENT"] as const) {
+            const segments = await listAudienceSegments(details, folder);
+            const target = segments.find((s) => s.name === config.audience_segment);
+            if (target) {
+              for (const c of target.contacts) mergedContacts.add(c);
+            }
+          }
+        }
+
+        const contacts = Array.from(mergedContacts);
+        if (contacts.length === 0) {
+          return {
+            content: [{ type: "text", text: `No contacts found in audience segment "${config.audience_segment}". Enroll contacts with add_to_audience first.` }],
+            isError: true,
+          };
+        }
+
         // Fetch all sent emails tagged with this campaign
         const sentPage = await fetchSentEmails(mailbox, 500);
         const campaignSent = sentPage.emails.filter((e) => e.flags.includes(campaignTag));
@@ -1289,20 +1300,14 @@ export function registerMailpoolTools(server: McpServer) {
           return variants[variants.length - 1];
         }
 
-        function interpolate(template: string, contact: typeof config.contacts[0]) {
-          return template
-            .replace(/\{\{firstName\}\}/g, contact.firstName || "")
-            .replace(/\{\{lastName\}\}/g, contact.lastName || "")
-            .replace(/\{\{email\}\}/g, contact.email)
-            .replace(/\{\{company\}\}/g, contact.company || "");
+        function interpolate(template: string, contactEmail: string) {
+          return template.replace(/\{\{email\}\}/g, contactEmail);
         }
 
         const results: Array<{ contact: string; step: number; variant: string; status: string }> = [];
         const now = Date.now();
 
-        for (const contact of config.contacts) {
-          const contactEmail = contact.email.toLowerCase();
-
+        for (const contactEmail of contacts) {
           // Check if contact has a terminal reply status
           const contactReplies = inboxPage.emails.filter(
             (e) => extractEmail(e.from) === contactEmail
@@ -1311,7 +1316,7 @@ export function registerMailpoolTools(server: McpServer) {
             (e) => e.flags.some((f) => TERMINAL_STATUSES.includes(f))
           );
           if (hasTerminalStatus) {
-            results.push({ contact: contact.email, step: 0, variant: "-", status: "skipped_terminal_status" });
+            results.push({ contact: contactEmail, step: 0, variant: "-", status: "skipped_terminal_status" });
             continue;
           }
 
@@ -1335,7 +1340,7 @@ export function registerMailpoolTools(server: McpServer) {
           // Find next step to send
           const nextStep = sortedSteps.find((s) => !completedSteps.has(s.step));
           if (!nextStep) {
-            results.push({ contact: contact.email, step: 0, variant: "-", status: "completed_all_steps" });
+            results.push({ contact: contactEmail, step: 0, variant: "-", status: "completed_all_steps" });
             continue;
           }
 
@@ -1344,7 +1349,7 @@ export function registerMailpoolTools(server: McpServer) {
             const daysSinceLast = (now - lastSentDate) / (1000 * 60 * 60 * 24);
             if (daysSinceLast < nextStep.delay_days) {
               results.push({
-                contact: contact.email,
+                contact: contactEmail,
                 step: nextStep.step,
                 variant: "-",
                 status: `waiting_delay (${Math.ceil(nextStep.delay_days - daysSinceLast)}d remaining)`,
@@ -1357,12 +1362,12 @@ export function registerMailpoolTools(server: McpServer) {
           const variant = pickVariant(nextStep.variants);
           const variantTag = `variant_${variant.name}`;
           const stepTag = `step_${nextStep.step}`;
-          const subject = interpolate(variant.subject, contact);
-          const text = variant.text ? interpolate(variant.text, contact) : undefined;
-          const html = variant.html ? interpolate(variant.html, contact) : undefined;
+          const subject = interpolate(variant.subject, contactEmail);
+          const text = variant.text ? interpolate(variant.text, contactEmail) : undefined;
+          const html = variant.html ? interpolate(variant.html, contactEmail) : undefined;
 
           if (!text && !html) {
-            results.push({ contact: contact.email, step: nextStep.step, variant: variant.name, status: "skipped_no_body" });
+            results.push({ contact: contactEmail, step: nextStep.step, variant: variant.name, status: "skipped_no_body" });
             continue;
           }
 
@@ -1378,7 +1383,7 @@ export function registerMailpoolTools(server: McpServer) {
                 const reSubject = headers.subject.match(/^re:/i) ? headers.subject : `Re: ${headers.subject}`;
                 const references = [headers.references, headers.messageId].filter(Boolean).join(" ");
                 result = await sendEmail(mailbox, {
-                  to: [contact.email],
+                  to: [contactEmail],
                   subject: reSubject,
                   text,
                   html,
@@ -1386,11 +1391,11 @@ export function registerMailpoolTools(server: McpServer) {
                   references,
                 });
               } else {
-                results.push({ contact: contact.email, step: nextStep.step, variant: variant.name, status: "skipped_no_original_thread" });
+                results.push({ contact: contactEmail, step: nextStep.step, variant: variant.name, status: "skipped_no_original_thread" });
                 continue;
               }
             } else {
-              result = await sendEmail(mailbox, { to: [contact.email], subject, text, html });
+              result = await sendEmail(mailbox, { to: [contactEmail], subject, text, html });
             }
 
             await appendToSent(mailbox, result.raw);
@@ -1407,10 +1412,10 @@ export function registerMailpoolTools(server: McpServer) {
               await setEmailFlag(mailbox, sentFolder, justSent.uid, variantTag);
             }
 
-            results.push({ contact: contact.email, step: nextStep.step, variant: variant.name, status: "sent" });
+            results.push({ contact: contactEmail, step: nextStep.step, variant: variant.name, status: "sent" });
           } catch (err: unknown) {
             const errorMessage = err instanceof Error ? err.message : String(err);
-            results.push({ contact: contact.email, step: nextStep.step, variant: variant.name, status: `error: ${errorMessage}` });
+            results.push({ contact: contactEmail, step: nextStep.step, variant: variant.name, status: `error: ${errorMessage}` });
           }
         }
 
@@ -1423,7 +1428,8 @@ export function registerMailpoolTools(server: McpServer) {
             type: "text",
             text: JSON.stringify({
               campaign: config.name,
-              summary: { sent, skipped, errors, total: config.contacts.length },
+              audience_segment: config.audience_segment,
+              summary: { sent, skipped, errors, total: contacts.length },
               results,
             }, null, 2),
           }],

@@ -955,18 +955,9 @@ export interface CampaignStep {
   variants: CampaignVariant[];
 }
 
-export interface CampaignContact {
-  email: string;
-  firstName?: string;
-  lastName?: string;
-  company?: string;
-}
-
 export interface CampaignConfig {
   name: string;
   audience_segment: string;
-  skill?: string;
-  contacts: CampaignContact[];
   sequence: CampaignStep[];
   created_at: string;
 }
