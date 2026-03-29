@@ -169,7 +169,7 @@ export function registerMailpoolTools(server: McpServer) {
   );
 
   server.tool(
-    "email_account_analytics",
+    "get_email_account_analytics",
     {
       email: z.string().describe("Email account to get analytics for"),
     },
@@ -1014,7 +1014,7 @@ export function registerMailpoolTools(server: McpServer) {
   // --- Campaign tools ---
 
   server.tool(
-    "campaign_analytics",
+    "get_campaign_analytics",
     {
       email: z.string().describe("Email account to analyze"),
       campaign: z.string().describe("Campaign name (matches campaign_{name} tag)"),

@@ -141,7 +141,7 @@ This tags both the reply and the matching sent email, removing any previous stat
 ### Step 5 — Measure results
 
 ```
-campaign_analytics({ email: "me@mycompany.com", campaign: "q1_launch" })
+get_campaign_analytics({ email: "me@mycompany.com", campaign: "q1_launch" })
 ```
 
 Returns:
@@ -177,7 +177,7 @@ Returns:
 For per-account analytics (across all campaigns):
 
 ```
-email_account_analytics({ email: "me@mycompany.com" })
+get_email_account_analytics({ email: "me@mycompany.com" })
 ```
 
 ## How It Works
@@ -232,14 +232,14 @@ campaign_q1_launch AND step_1           -- first step of a campaign
 | `get_campaign` | Get the full campaign config |
 | `list_campaigns` | List all campaigns on an account |
 | `delete_campaign` | Delete a campaign config |
-| `campaign_analytics` | Full report: reply rate, status breakdown, per-step + per-variant A/B performance |
+| `get_campaign_analytics` | Full report: reply rate, status breakdown, per-step + per-variant A/B performance |
 
 ### Email Accounts & Analytics
 
 | Tool | Description |
 |---|---|
 | `list_email_accounts` | List all registered mailboxes with status and domain info |
-| `email_account_analytics` | Per-account analytics: sent, replied, reply rate, status breakdown |
+| `get_email_account_analytics` | Per-account analytics: sent, replied, reply rate, status breakdown |
 
 ### Sending & Replying
 
