@@ -1,0 +1,20 @@
+{
+  "name": "@outbound-tools/toolkit",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
+  "scripts": { "build": "tsc", "clean": "rm -rf dist", "typecheck": "tsc --noEmit" },
+  "dependencies": {
+    "imapflow": "^1.2.10",
+    "mailparser": "^3.9.3",
+    "nodemailer": "^8.0.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/mailparser": "^3.4.6",
+    "@types/nodemailer": "^7.0.11",
+    "typescript": "^5.7.3"
+  }
+}

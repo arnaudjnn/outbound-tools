@@ -1,0 +1,21 @@
+{
+  "name": "@outbound-tools/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": { "outbound-tools": "dist/index.js" },
+  "scripts": {
+    "start": "tsx --env-file=../../.env.local src/index.ts",
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@outbound-tools/toolkit": "workspace:*",
+    "commander": "^13.1.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

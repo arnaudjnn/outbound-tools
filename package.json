@@ -1,32 +1,18 @@
 {
-  "name": "outbound-tools",
-  "version": "0.1.0",
+  "name": "@outbound-tools/root",
   "private": true,
+  "version": "0.1.0",
+  "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
+    "build": "pnpm --filter @outbound-tools/toolkit run build && pnpm --filter @outbound-tools/api run build && pnpm --filter @outbound-tools/cli run build",
+    "start": "pnpm --filter @outbound-tools/api run start",
+    "serve": "pnpm --filter @outbound-tools/api run serve",
+    "clean": "pnpm -r run clean",
+    "typecheck": "pnpm -r run typecheck"
   },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.78.0",
-    "@modelcontextprotocol/sdk": "1.25.2",
-    "imapflow": "^1.2.10",
-    "mailparser": "^3.9.3",
-    "mcp-handler": "^1.0.7",
-    "next": "16.1.6",
-    "nodemailer": "^8.0.1",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "zod": "^3.25.76"
-  },
+  "engines": { "node": "22.x" },
   "devDependencies": {
-    "@types/mailparser": "^3.4.6",
-    "@types/node": "^20",
-    "@types/nodemailer": "^7.0.11",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "dotenv": "^17.3.1",
-    "tsx": "^4.21.0",
-    "typescript": "^5"
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.3"
   }
 }
