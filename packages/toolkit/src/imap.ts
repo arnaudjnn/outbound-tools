@@ -1202,7 +1202,7 @@ export async function saveCampaignConfig(
 
     // Build and append the new config draft
     // @ts-ignore nodemailer internal
-const { default: MailComposer } = await import("nodemailer/lib/mail-composer");
+const { default: MailComposer } = await import("nodemailer/lib/mail-composer/index.js");
     const composer = new MailComposer({
       from: `${mailbox.firstName} ${mailbox.lastName} <${mailbox.email}>`,
       to: mailbox.email,

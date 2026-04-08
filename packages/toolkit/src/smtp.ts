@@ -1,7 +1,7 @@
 import nodemailer from "nodemailer";
 // @ts-ignore -- nodemailer internal module
 // @ts-ignore nodemailer internal
-import MailComposer from "nodemailer/lib/mail-composer";
+import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import type { MailboxDetails } from "./types.js";
 
 interface SendEmailParams {
