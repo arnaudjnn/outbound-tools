@@ -1,16 +1,27 @@
 import type { Command } from 'commander';
 
 /**
- * Parse a ToolResult's content text into a JS object.
+ * Normalize a tool result into a JS object.
+ *
+ * `functionMap` handlers return raw objects, but some callers wrap results in
+ * the MCP ToolResult shape (`{ content: [{ type, text }] }`). Handle both.
  */
-export function parseResult(result: { content: { type: string; text: string }[] }): unknown {
-  const text = result.content[0]?.text;
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
+export function parseResult(result: unknown): unknown {
+  if (
+    result &&
+    typeof result === 'object' &&
+    'content' in result &&
+    Array.isArray((result as { content: unknown }).content)
+  ) {
+    const text = (result as { content: { text?: string }[] }).content[0]?.text;
+    if (text == null) return result;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
   }
+  return result;
 }
 
 /**

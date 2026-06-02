@@ -5,6 +5,7 @@ import {
   SendEmailInput,
   ListSentEmailsInput,
   ListThreadsInput,
+  ListAllAccountThreadsInput,
   GetEmailAccountAnalyticsInput,
   AddEmailTagInput,
   RemoveEmailTagInput,
@@ -63,8 +64,14 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: "list_threads",
-    description: "Match received INBOX emails to sent emails by subject to find reply threads",
+    description: "List all conversation threads for one account by walking RFC References/In-Reply-To headers (true threading, not just subject)",
     parameters: ListThreadsInput,
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "list_all_account_threads",
+    description: "List conversation threads across every registered account using the same header-based threading, aggregated per account",
+    parameters: ListAllAccountThreadsInput,
     annotations: { readOnlyHint: true },
   },
   {

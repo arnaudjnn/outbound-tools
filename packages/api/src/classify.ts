@@ -44,9 +44,13 @@ interface EmailMessage {
   flags: string[];
 }
 
-interface ThreadMatch {
-  receivedUid: number;
-  sentUid: number;
+interface ThreadMessage {
+  uid: number;
+  folder: string;
+}
+
+interface Thread {
+  messages?: ThreadMessage[];
 }
 
 interface AccountResult {
@@ -111,10 +115,9 @@ export async function classifyHandler(req: Request, res: Response) {
       res.status(500).json({ error: 'list_email_accounts tool not available' });
       return;
     }
-    const accountsResult = await listAccounts({});
-    const accounts: Array<{ id: string; email: string }> = JSON.parse(
-      accountsResult.content[0]?.text ?? '[]',
-    );
+    // functionMap handlers return raw objects (the HTTP/MCP layers wrap them).
+    const accounts: Array<{ id: string; email: string }> =
+      (await listAccounts({})) ?? [];
 
     const results: AccountResult[] = [];
 
@@ -134,12 +137,11 @@ export async function classifyHandler(req: Request, res: Response) {
         none: 0,
       };
 
-      // Fetch inbox emails
+      // Fetch inbox emails (for body previews + flags)
       const listReceived = functionMap['list_received_emails'];
       if (!listReceived) continue;
-      const inboxResult = await listReceived({ email: account.email, limit: 50, page: 1 });
-      const inboxData = JSON.parse(inboxResult.content[0]?.text ?? '{"emails":[]}');
-      const inbox: EmailMessage[] = inboxData.emails;
+      const inboxData = await listReceived({ email: account.email, limit: 50, page: 1 });
+      const inbox: EmailMessage[] = inboxData?.emails ?? [];
 
       const unclassified = inbox.filter(
         (e: EmailMessage) => !e.flags.includes('classified'),
@@ -150,67 +152,53 @@ export async function classifyHandler(req: Request, res: Response) {
         continue;
       }
 
-      // Fetch threads to match replies to sent
+      // Use header-based threads to pair each reply with its sent original.
+      // Within a thread, any Sent-folder message is the outbound counterpart of
+      // the INBOX replies; map reply UID -> sent UID so we can tag both sides.
       const listThreads = functionMap['list_threads'];
-      if (!listThreads) continue;
-      const threadsResult = await listThreads({
-        email: account.email,
-        receivedLimit: 50,
-        sentLimit: 200,
-        unclassifiedOnly: true,
-      });
-      const threadsData = JSON.parse(threadsResult.content[0]?.text ?? '{"matches":[],"unmatchedUids":[]}');
-      const matches: ThreadMatch[] = threadsData.matches;
-      const unmatchedUids: number[] = threadsData.unmatchedUids;
-
-      // Classify matched replies
-      const setStatus = functionMap['set_reply_status'];
-      const addTag = functionMap['add_email_tag'];
-
-      for (const match of matches) {
-        const replyEmail = unclassified.find(
-          (e: EmailMessage) => e.uid === match.receivedUid,
-        );
-        if (!replyEmail) continue;
-
-        const category = await classifyEmail(anthropic, replyEmail);
-        counts.total++;
-        counts[category]++;
-
-        if (setStatus && category !== 'none') {
-          await setStatus({
-            email: account.email,
-            uid: match.receivedUid,
-            status: category,
-            sent_uid: match.sentUid,
-          });
-        } else if (addTag) {
-          // Just mark as classified if no category
-          await addTag({ email: account.email, uid: match.receivedUid, tag: 'classified', folder: 'INBOX' });
-          await addTag({ email: account.email, uid: match.sentUid, tag: 'classified', folder: 'SENT' });
+      const sentByReply = new Map<number, number>();
+      if (listThreads) {
+        const threadsData = await listThreads({
+          email: account.email,
+          folders: ['INBOX', 'SENT'],
+          limit: 200,
+          includeMessages: true,
+        });
+        for (const thread of (threadsData?.threads ?? []) as Thread[]) {
+          const msgs = thread.messages ?? [];
+          const sent = msgs.find((m) => m.folder !== 'INBOX');
+          if (!sent) continue;
+          for (const m of msgs) {
+            if (m.folder === 'INBOX') sentByReply.set(m.uid, sent.uid);
+          }
         }
       }
 
-      // Classify unmatched replies (tag INBOX only)
-      for (const uid of unmatchedUids) {
-        const email = unclassified.find((e: EmailMessage) => e.uid === uid);
-        if (!email) continue;
+      const setStatus = functionMap['set_reply_status'];
+      const addTag = functionMap['add_email_tag'];
 
+      for (const email of unclassified) {
         const category = await classifyEmail(anthropic, email);
         counts.total++;
         counts[category]++;
 
+        const sentUid = sentByReply.get(email.uid);
+
         if (setStatus && category !== 'none') {
           await setStatus({
             email: account.email,
-            uid,
+            uid: email.uid,
             status: category,
+            ...(sentUid !== undefined ? { sent_uid: sentUid } : {}),
           });
         } else if (addTag) {
           if (category !== 'none') {
-            await addTag({ email: account.email, uid, tag: category, folder: 'INBOX' });
+            await addTag({ email: account.email, uid: email.uid, tag: category, folder: 'INBOX' });
           }
-          await addTag({ email: account.email, uid, tag: 'classified', folder: 'INBOX' });
+          await addTag({ email: account.email, uid: email.uid, tag: 'classified', folder: 'INBOX' });
+          if (sentUid !== undefined) {
+            await addTag({ email: account.email, uid: sentUid, tag: 'classified', folder: 'SENT' });
+          }
         }
       }
 

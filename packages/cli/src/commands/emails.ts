@@ -92,11 +92,41 @@ export function registerEmailsCommand(program: Command) {
 
   emails
     .command('threads <email>')
-    .description('List email threads (match received to sent)')
-    .action(async (email: string) => {
+    .description('List all conversation threads for one account via RFC References/In-Reply-To headers')
+    .option('--folders <list>', 'Comma-separated folders to scan', 'INBOX,SENT')
+    .option('--limit <n>', 'Max messages to scan per folder', '500')
+    .option('--messages', 'Include per-message details in each thread')
+    .option('--no-subject-fallback', 'Do not group header-less messages by subject')
+    .action(async (email: string, opts: { folders: string; limit: string; messages?: boolean; subjectFallback: boolean }) => {
       const handler = functionMap['list_threads'];
       if (!handler) throw new Error('list_threads tool not available');
-      const result = await handler({ email });
+      const result = await handler({
+        email,
+        folders: opts.folders.split(',').map((s) => s.trim()).filter(Boolean),
+        limit: parseInt(opts.limit, 10),
+        includeMessages: Boolean(opts.messages),
+        subjectFallback: opts.subjectFallback,
+      });
+      const data = parseResult(result);
+      output(program, data);
+    });
+
+  emails
+    .command('threads-all')
+    .description('List conversation threads across every registered account')
+    .option('--folders <list>', 'Comma-separated folders to scan', 'INBOX,SENT')
+    .option('--limit <n>', 'Max messages to scan per folder', '500')
+    .option('--messages', 'Include per-message details in each thread')
+    .option('--no-subject-fallback', 'Do not group header-less messages by subject')
+    .action(async (opts: { folders: string; limit: string; messages?: boolean; subjectFallback: boolean }) => {
+      const handler = functionMap['list_all_account_threads'];
+      if (!handler) throw new Error('list_all_account_threads tool not available');
+      const result = await handler({
+        folders: opts.folders.split(',').map((s) => s.trim()).filter(Boolean),
+        limit: parseInt(opts.limit, 10),
+        includeMessages: Boolean(opts.messages),
+        subjectFallback: opts.subjectFallback,
+      });
       const data = parseResult(result);
       output(program, data);
     });
