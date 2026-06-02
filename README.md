@@ -328,3 +328,14 @@ campaign_q1_launch AND step_1           -- first step of a campaign
 | `MAILPOOL_API_KEY` | Yes | Your Mailpool API key for email account access |
 | `API_KEY` | Yes | Secures the MCP server and `/api/v0/classify` endpoint. Auto-generated on Railway via `${{secret()}}`. Pass as `Authorization: Bearer <key>` header or `?api_key=<key>` query param. |
 | `ANTHROPIC_API_KEY` | No | Enables auto-classification via `POST /api/v0/classify`. Only needed if you want the server to classify replies automatically. Without it, use the `/classify-replies` agent skill instead. |
+
+## Integrations
+
+### Airbyte
+
+`integrations/airbyte/source-manifest.yml` is a [low-code connector](https://docs.airbyte.com/platform/connector-development/connector-builder-ui/overview) manifest that syncs the read-only endpoints — accounts, threads, received/sent emails, drafts, analytics, campaigns, audiences — as Airbyte streams. Per-account streams fan out from `accounts`, so one sync covers every mailbox.
+
+In the Airbyte Connector Builder, choose **Import a YAML manifest**, paste the file, then set:
+
+- `api_url` — your server URL, e.g. `https://your-app.up.railway.app`
+- `api_key` — your `API_KEY`
