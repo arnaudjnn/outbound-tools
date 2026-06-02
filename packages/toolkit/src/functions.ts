@@ -12,7 +12,7 @@ import {
 import { sendEmail, composeDraft } from "./smtp.js";
 import type { z } from "zod";
 import type {
-  ListEmailAccountsInput, ListReceivedEmailsInput, SendEmailInput,
+  ListReceivedEmailsInput, SendEmailInput,
   ListSentEmailsInput, ListThreadsInput, ListAllAccountThreadsInput, GetEmailAccountAnalyticsInput,
   AddEmailTagInput, RemoveEmailTagInput, AddToAudienceInput,
   RemoveFromAudienceInput, GetEmailInput, GetEmailRawInput,
