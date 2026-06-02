@@ -565,7 +565,17 @@ export async function fetchEmails(
   }
 }
 
-// Appends a raw RFC822 message to the Sent folder via IMAP.
+// Extracts the Message-ID from a raw RFC822 message's header block.
+function extractMessageId(raw: Buffer): string | null {
+  const headerBlock = raw.toString("utf8", 0, Math.min(raw.length, 16384));
+  const m = headerBlock.match(/^message-id:\s*(<[^>]+>)/im);
+  return m ? m[1].trim() : null;
+}
+
+// Appends a raw RFC822 message to the Sent folder via IMAP — idempotently.
+// If a message with the same Message-ID is already in Sent (e.g. saved
+// server-side by the mail provider, or a previous append/retry), it skips the
+// append so the Sent folder doesn't accumulate duplicates.
 export async function appendToSent(
   mailbox: MailboxDetails,
   raw: Buffer
@@ -574,7 +584,21 @@ export async function appendToSent(
   try {
     await client.connect();
     const sentFolder = await findSentFolder(client, mailbox.imapHost);
-    await client.append(sentFolder, raw, ["\\Seen"]);
+    const messageId = extractMessageId(raw);
+
+    const lock = await client.getMailboxLock(sentFolder);
+    try {
+      if (messageId) {
+        const existing = await client.search(
+          { header: { "message-id": messageId } },
+          { uid: true }
+        );
+        if (existing && existing.length > 0) return; // already in Sent — don't duplicate
+      }
+      await client.append(sentFolder, raw, ["\\Seen"]);
+    } finally {
+      lock.release();
+    }
   } finally {
     await client.logout();
   }
