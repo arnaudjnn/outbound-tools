@@ -23,8 +23,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: pnpm -r run typecheck
-
+      # Build first: cli/api typecheck against the toolkit's emitted dist/
+      # declarations, which must exist before `tsc --noEmit` runs there.
       - name: Build
         run: pnpm run build
+
+      - name: Typecheck
+        run: pnpm -r run typecheck
