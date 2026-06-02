@@ -142,33 +142,43 @@ export async function get_email_account_analytics(params: z.infer<typeof GetEmai
   const { email } = params;
   const mailbox = await getMailboxByEmail(email);
 
-  const sentPage = await fetchSentEmails(mailbox, 1);
-  const totalSent = sentPage.total;
-
-  if (totalSent === 0) {
-    return { totalSent: 0, statuses: {}, rates: {} };
-  }
-
-  const sentFolder = await resolveFolder(mailbox, "SENT");
   const statusTags = [
     "interested", "meeting_request", "information_request",
     "not_interested", "wrong_person", "do_not_contact",
     "out_of_office", "unsubscribed", "bounced",
   ];
+  // Rates are "unknown" (not 0%) when there is nothing to measure: no sent
+  // emails, or no replies classified yet. Classification only sets status tags
+  // when ANTHROPIC_API_KEY is set (auto endpoint) or via the classify-replies
+  // skill — so an unclassified mailbox reports "unknown", not a misleading 0%.
+  const unknownRates = Object.fromEntries(statusTags.map((t) => [t, "unknown"]));
+  const zeroStatuses = Object.fromEntries(statusTags.map((t) => [t, 0]));
+
+  const sentPage = await fetchSentEmails(mailbox, 1);
+  const totalSent = sentPage.total;
+
+  if (totalSent === 0) {
+    return { totalSent: 0, totalReplied: 0, replyRate: "unknown", statuses: zeroStatuses, rates: unknownRates };
+  }
+
+  const sentFolder = await resolveFolder(mailbox, "SENT");
   const counts = await Promise.all(
     statusTags.map((tag) => countByKeyword(mailbox, sentFolder, tag))
   );
 
   const statuses: Record<string, number> = {};
-  const rates: Record<string, number> = {};
-  const rate = (count: number) => Math.round((count / totalSent) * 10000) / 100;
-
-  for (let i = 0; i < statusTags.length; i++) {
-    statuses[statusTags[i]] = counts[i];
-    rates[statusTags[i]] = rate(counts[i]);
-  }
+  for (let i = 0; i < statusTags.length; i++) statuses[statusTags[i]] = counts[i];
 
   const totalReplied = counts.reduce((sum, c) => sum + c, 0);
+
+  // No classified replies yet -> rates are unmeasured rather than 0%.
+  if (totalReplied === 0) {
+    return { totalSent, totalReplied: 0, replyRate: "unknown", statuses, rates: unknownRates };
+  }
+
+  const rate = (count: number) => Math.round((count / totalSent) * 10000) / 100;
+  const rates: Record<string, number> = {};
+  for (let i = 0; i < statusTags.length; i++) rates[statusTags[i]] = rate(counts[i]);
 
   return {
     totalSent,
@@ -611,7 +621,10 @@ export async function get_campaign_analytics(params: z.infer<typeof GetCampaignA
 
   const totalSent = campaignSent.length;
   const totalReplied = Object.values(statusCounts).reduce((sum, c) => sum + c, 0);
-  const rate = (count: number) => Math.round((count / totalSent) * 10000) / 100;
+  // "unknown" rather than 0% when nothing has been sent or classified yet.
+  const measurable = totalSent > 0 && totalReplied > 0;
+  const rate = (count: number): number | string =>
+    measurable ? Math.round((count / totalSent) * 10000) / 100 : "unknown";
 
   return {
     campaign,
