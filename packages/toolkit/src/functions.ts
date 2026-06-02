@@ -13,7 +13,7 @@ import { sendEmail, composeDraft } from "./smtp.js";
 import type { z } from "zod";
 import type {
   ListReceivedEmailsInput, SendEmailInput,
-  ListSentEmailsInput, ListThreadsInput, ListAllAccountThreadsInput, GetEmailAccountAnalyticsInput,
+  ListSentEmailsInput, ListThreadsInput, GetEmailAccountAnalyticsInput,
   AddEmailTagInput, RemoveEmailTagInput, AddToAudienceInput,
   RemoveFromAudienceInput, GetEmailInput, GetEmailRawInput,
   ReplyToEmailInput, ReplyAllToEmailInput, ForwardEmailInput,
@@ -98,43 +98,27 @@ export async function list_sent_emails(params: z.infer<typeof ListSentEmailsInpu
 
 // Lists all conversation threads for a single account using header-based
 // threading (RFC References / In-Reply-To), scanning INBOX + Sent by default.
+// Threads are paginated by `page`/`limit` (threads per page).
 export async function list_threads(params: z.infer<typeof ListThreadsInput>) {
-  const { email, folders, limit, includeMessages, subjectFallback } = params;
+  const { email, folders, scanLimit, limit, page, includeMessages, subjectFallback } = params;
   const mailbox = await getMailboxByEmail(email);
-  const result = await listAllThreads(mailbox, { folders, limit, includeMessages, subjectFallback });
-  return { account: email, ...result };
-}
+  const result = await listAllThreads(mailbox, { folders, scanLimit, includeMessages, subjectFallback });
 
-// Lists conversation threads across every registered mailbox and aggregates.
-export async function list_all_account_threads(params: z.infer<typeof ListAllAccountThreadsInput>) {
-  const { folders, limit, includeMessages, subjectFallback } = params;
-  const opts = { folders, limit, includeMessages, subjectFallback };
-
-  const mailboxes = await listMailboxes();
-  const accounts: Array<Record<string, unknown>> = [];
-  let threadCount = 0;
-  let messagesScanned = 0;
-
-  for (const m of mailboxes) {
-    try {
-      const mailbox = await getMailboxById(m.id);
-      const result = await listAllThreads(mailbox, opts);
-      accounts.push({ account: m.email, ...result });
-      threadCount += result.threadCount;
-      messagesScanned += result.messagesScanned;
-    } catch (err) {
-      accounts.push({
-        account: m.email,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
+  const total = result.threadCount;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const startIdx = (page - 1) * limit;
+  const threads = result.threads.slice(startIdx, startIdx + limit);
 
   return {
-    accountCount: accounts.length,
-    messagesScanned,
-    threadCount,
-    accounts,
+    account: email,
+    messagesScanned: result.messagesScanned,
+    foldersScanned: result.foldersScanned,
+    truncated: result.truncated,
+    total,
+    page,
+    limit,
+    totalPages,
+    threads,
   };
 }
 
@@ -877,7 +861,6 @@ export const functionMap: Record<string, (params: any) => Promise<any>> = {
   send_email,
   list_sent_emails,
   list_threads,
-  list_all_account_threads,
   get_email_account_analytics,
   add_email_tag,
   remove_email_tag,

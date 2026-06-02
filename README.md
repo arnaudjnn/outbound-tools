@@ -285,8 +285,7 @@ campaign_q1_launch AND step_1           -- first step of a campaign
 
 | Tool | Description |
 |---|---|
-| `list_threads` | List all conversation threads for one account via RFC `References`/`In-Reply-To` headers (true threading) |
-| `list_all_account_threads` | Same header-based threading aggregated across every registered account |
+| `list_threads` | List all conversation threads for one account via RFC `References`/`In-Reply-To` headers (true threading), paginated |
 | `get_thread` | Get all messages in a conversation thread by subject |
 
 ### Drafts

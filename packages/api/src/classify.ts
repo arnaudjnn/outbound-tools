@@ -161,7 +161,9 @@ export async function classifyHandler(req: Request, res: Response) {
         const threadsData = await listThreads({
           email: account.email,
           folders: ['INBOX', 'SENT'],
-          limit: 200,
+          scanLimit: 200,
+          limit: 1000, // one page: all threads from the scanned window
+          page: 1,
           includeMessages: true,
         });
         for (const thread of (threadsData?.threads ?? []) as Thread[]) {

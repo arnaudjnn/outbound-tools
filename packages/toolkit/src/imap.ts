@@ -120,14 +120,14 @@ export async function listAllThreads(
   mailbox: MailboxDetails,
   opts: {
     folders?: string[];
-    limit?: number;
+    scanLimit?: number;
     includeMessages?: boolean;
     subjectFallback?: boolean;
   } = {}
 ): Promise<ListAllThreadsResult> {
   const {
     folders = ["INBOX", "SENT"],
-    limit = 500,
+    scanLimit = 500,
     includeMessages = false,
     subjectFallback = true,
   } = opts;
@@ -151,11 +151,11 @@ export async function listAllThreads(
         const mb = client.mailbox;
         const total = mb && typeof mb === "object" ? mb.exists : 0;
         if (total === 0) continue;
-        if (total > limit) truncated = true;
+        if (total > scanLimit) truncated = true;
 
-        // Scan the most recent `limit` messages in the folder.
+        // Scan the most recent `scanLimit` messages in the folder.
         const end = total;
-        const start = Math.max(1, end - limit + 1);
+        const start = Math.max(1, end - scanLimit + 1);
 
         for await (const msg of client.fetch(`${start}:${end}`, {
           uid: true,

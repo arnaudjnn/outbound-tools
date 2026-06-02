@@ -1,0 +1,430 @@
+version: "6.5.2"
+type: DeclarativeSource
+
+# ---------------------------------------------------------------------------
+# Outbound Tools — Airbyte low-code (declarative) source
+#
+# Exposes the read-only REST endpoints (POST /api/v0/{tool}) as streams.
+# Auth: Bearer <API_KEY>. The per-account endpoints are modeled as substreams
+# of `accounts`, so a single sync fans out across every registered mailbox and
+# stamps each record with its owning `account`.
+#
+# `api_url` must include the API base path, e.g.
+#   https://your-app.up.railway.app/api/v0
+#
+# Item-lookup endpoints that require a uid/subject/campaign (get_email,
+# get_email_raw, get_thread, get_attachment, get_draft, get_campaign,
+# get_campaign_analytics) are intentionally not streams — they are point reads,
+# not bulk collections. `threads` already returns full messages inline.
+# ---------------------------------------------------------------------------
+
+definitions:
+  # --- shared requester pieces -------------------------------------------
+  bearer_authenticator:
+    type: BearerAuthenticator
+    api_token: "{{ config['api_key'] }}"
+
+  base_requester:
+    type: HttpRequester
+    url_base: "{{ config['api_url'] }}"
+    http_method: POST
+    authenticator:
+      $ref: "#/definitions/bearer_authenticator"
+
+  # Page-based paginator for endpoints that accept { page, limit } and return
+  # { emails, total, page, limit, totalPages }. Stops when a page returns fewer
+  # records than the page size.
+  page_paginator:
+    type: DefaultPaginator
+    page_size_option:
+      type: RequestOption
+      inject_into: body_json
+      field_name: limit
+    page_token_option:
+      type: RequestOption
+      inject_into: body_json
+      field_name: page
+    pagination_strategy:
+      type: PageIncrement
+      page_size: 100
+      start_from_page: 1
+
+  # Fan-out over every registered mailbox.
+  accounts_partition_router:
+    type: SubstreamPartitionRouter
+    parent_stream_configs:
+      - type: ParentStreamConfig
+        parent_key: email
+        partition_field: email
+        stream:
+          $ref: "#/definitions/streams/accounts"
+
+  add_account_field:
+    type: AddFields
+    fields:
+      - path: ["account"]
+        value: "{{ stream_partition.email }}"
+
+  # --- streams ------------------------------------------------------------
+  streams:
+    # Parent stream — list_email_accounts (no params, array response).
+    accounts:
+      type: DeclarativeStream
+      name: accounts
+      primary_key: id
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          path: /list_email_accounts
+          request_body_json: {}
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path: []
+      schema_loader:
+        type: InlineSchema
+        schema:
+          $schema: http://json-schema.org/draft-07/schema#
+          type: object
+          additionalProperties: true
+          properties:
+            id: { type: integer }
+            email: { type: string }
+            firstName: { type: ["string", "null"] }
+            lastName: { type: ["string", "null"] }
+            status: { type: ["string", "null"] }
+            domain: { type: ["object", "null"], additionalProperties: true }
+
+    # THE important one — all conversation threads, per account (header-based).
+    # Runs list_threads for every account (substream of `accounts`) and paginates
+    # each, so one sync yields every thread of every mailbox, stamped with
+    # `account`. Replaces any need for a separate all-accounts endpoint.
+    threads:
+      type: DeclarativeStream
+      name: threads
+      primary_key:
+        - account
+        - threadId
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          path: /list_threads
+          request_body_json:
+            email: "{{ stream_partition.email }}"
+            folders: ["INBOX", "SENT"]
+            scanLimit: 500
+            includeMessages: true
+            subjectFallback: true
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path: ["threads"]
+        paginator:
+          $ref: "#/definitions/page_paginator"
+        partition_router:
+          $ref: "#/definitions/accounts_partition_router"
+      transformations:
+        - $ref: "#/definitions/add_account_field"
+      schema_loader:
+        type: InlineSchema
+        schema:
+          $schema: http://json-schema.org/draft-07/schema#
+          type: object
+          additionalProperties: true
+          properties:
+            account: { type: string }
+            threadId: { type: string }
+            subject: { type: ["string", "null"] }
+            messageCount: { type: integer }
+            participants: { type: array, items: { type: string } }
+            firstDate: { type: ["string", "null"] }
+            lastDate: { type: ["string", "null"] }
+            folders: { type: array, items: { type: string } }
+            messages:
+              type: ["array", "null"]
+              items: { type: object, additionalProperties: true }
+
+    received_emails:
+      type: DeclarativeStream
+      name: received_emails
+      primary_key:
+        - account
+        - uid
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          path: /list_received_emails
+          request_body_json:
+            email: "{{ stream_partition.email }}"
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path: ["emails"]
+        paginator:
+          $ref: "#/definitions/page_paginator"
+        partition_router:
+          $ref: "#/definitions/accounts_partition_router"
+      transformations:
+        - $ref: "#/definitions/add_account_field"
+      schema_loader:
+        type: InlineSchema
+        schema:
+          $schema: http://json-schema.org/draft-07/schema#
+          type: object
+          additionalProperties: true
+          properties:
+            account: { type: string }
+            uid: { type: integer }
+            flags: { type: array, items: { type: string } }
+            subject: { type: ["string", "null"] }
+            from: { type: ["string", "null"] }
+            to: { type: ["string", "null"] }
+            date: { type: ["string", "null"] }
+            preview: { type: ["string", "null"] }
+
+    sent_emails:
+      type: DeclarativeStream
+      name: sent_emails
+      primary_key:
+        - account
+        - uid
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          path: /list_sent_emails
+          request_body_json:
+            email: "{{ stream_partition.email }}"
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path: ["emails"]
+        paginator:
+          $ref: "#/definitions/page_paginator"
+        partition_router:
+          $ref: "#/definitions/accounts_partition_router"
+      transformations:
+        - $ref: "#/definitions/add_account_field"
+      schema_loader:
+        type: InlineSchema
+        schema:
+          $schema: http://json-schema.org/draft-07/schema#
+          type: object
+          additionalProperties: true
+          properties:
+            account: { type: string }
+            uid: { type: integer }
+            flags: { type: array, items: { type: string } }
+            subject: { type: ["string", "null"] }
+            from: { type: ["string", "null"] }
+            to: { type: ["string", "null"] }
+            date: { type: ["string", "null"] }
+            preview: { type: ["string", "null"] }
+
+    drafts:
+      type: DeclarativeStream
+      name: drafts
+      primary_key:
+        - account
+        - uid
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          path: /list_drafts
+          request_body_json:
+            email: "{{ stream_partition.email }}"
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path: ["emails"]
+        paginator:
+          $ref: "#/definitions/page_paginator"
+        partition_router:
+          $ref: "#/definitions/accounts_partition_router"
+      transformations:
+        - $ref: "#/definitions/add_account_field"
+      schema_loader:
+        type: InlineSchema
+        schema:
+          $schema: http://json-schema.org/draft-07/schema#
+          type: object
+          additionalProperties: true
+          properties:
+            account: { type: string }
+            uid: { type: integer }
+            flags: { type: array, items: { type: string } }
+            subject: { type: ["string", "null"] }
+            from: { type: ["string", "null"] }
+            to: { type: ["string", "null"] }
+            date: { type: ["string", "null"] }
+            preview: { type: ["string", "null"] }
+
+    account_analytics:
+      type: DeclarativeStream
+      name: account_analytics
+      primary_key: account
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          path: /get_email_account_analytics
+          request_body_json:
+            email: "{{ stream_partition.email }}"
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path: []
+        partition_router:
+          $ref: "#/definitions/accounts_partition_router"
+      transformations:
+        - $ref: "#/definitions/add_account_field"
+      schema_loader:
+        type: InlineSchema
+        schema:
+          $schema: http://json-schema.org/draft-07/schema#
+          type: object
+          additionalProperties: true
+          properties:
+            account: { type: string }
+            totalSent: { type: integer }
+            totalReplied: { type: integer }
+            # replyRate is a number, or the string "unknown" when unmeasured.
+            replyRate: { type: ["number", "string"] }
+            statuses: { type: object, additionalProperties: true }
+            rates: { type: object, additionalProperties: true }
+
+    campaigns:
+      type: DeclarativeStream
+      name: campaigns
+      primary_key:
+        - account
+        - name
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          path: /list_campaigns
+          request_body_json:
+            email: "{{ stream_partition.email }}"
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path: ["campaigns"]
+        partition_router:
+          $ref: "#/definitions/accounts_partition_router"
+      transformations:
+        - $ref: "#/definitions/add_account_field"
+      schema_loader:
+        type: InlineSchema
+        schema:
+          $schema: http://json-schema.org/draft-07/schema#
+          type: object
+          additionalProperties: true
+          properties:
+            account: { type: string }
+            name: { type: string }
+            uid: { type: integer }
+
+    audiences:
+      type: DeclarativeStream
+      name: audiences
+      primary_key: name
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          path: /list_audiences
+          request_body_json: {}
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path: ["segments"]
+      schema_loader:
+        type: InlineSchema
+        schema:
+          $schema: http://json-schema.org/draft-07/schema#
+          type: object
+          additionalProperties: true
+          properties:
+            name: { type: string }
+            count: { type: integer }
+            contacts: { type: array, items: { type: string } }
+
+    reply_statuses:
+      type: DeclarativeStream
+      name: reply_statuses
+      primary_key: tag
+      retriever:
+        type: SimpleRetriever
+        requester:
+          $ref: "#/definitions/base_requester"
+          path: /list_reply_statuses
+          request_body_json: {}
+        record_selector:
+          type: RecordSelector
+          extractor:
+            type: DpathExtractor
+            field_path: []
+      schema_loader:
+        type: InlineSchema
+        schema:
+          $schema: http://json-schema.org/draft-07/schema#
+          type: object
+          additionalProperties: true
+          properties:
+            tag: { type: string }
+            description: { type: ["string", "null"] }
+
+streams:
+  - $ref: "#/definitions/streams/accounts"
+  - $ref: "#/definitions/streams/threads"
+  - $ref: "#/definitions/streams/received_emails"
+  - $ref: "#/definitions/streams/sent_emails"
+  - $ref: "#/definitions/streams/drafts"
+  - $ref: "#/definitions/streams/account_analytics"
+  - $ref: "#/definitions/streams/campaigns"
+  - $ref: "#/definitions/streams/audiences"
+  - $ref: "#/definitions/streams/reply_statuses"
+
+check:
+  type: CheckStream
+  stream_names:
+    - accounts
+
+spec:
+  type: Spec
+  documentation_url: https://github.com/arnaudjnn/outbound-tools
+  connection_specification:
+    $schema: http://json-schema.org/draft-07/schema#
+    title: Outbound Tools Source Spec
+    type: object
+    required:
+      - api_url
+      - api_key
+    additionalProperties: true
+    properties:
+      api_url:
+        type: string
+        title: API base URL
+        description: Base URL including the API path, e.g. https://your-app.up.railway.app/api/v0
+        examples:
+          - https://your-app.up.railway.app/api/v0
+        order: 0
+      api_key:
+        type: string
+        title: API key
+        description: The server's API_KEY, sent as a Bearer token.
+        airbyte_secret: true
+        order: 1
