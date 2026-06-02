@@ -27,10 +27,18 @@ export const ListSentEmailsInput = z.object({
 });
 
 export const ListThreadsInput = z.object({
-  email: z.string().describe("Email account to analyze"),
-  receivedLimit: z.number().optional().default(50).describe("Max received emails to check"),
-  sentLimit: z.number().optional().default(200).describe("Max sent emails to match against"),
-  unclassifiedOnly: z.boolean().optional().default(true).describe("Only check emails without the 'classified' flag"),
+  email: z.string().describe("Email account to list threads for"),
+  folders: z.array(z.string()).optional().default(["INBOX", "SENT"]).describe("Folders to scan. 'SENT' auto-resolves the Sent folder."),
+  limit: z.number().optional().default(500).describe("Max messages to scan per folder (most recent first)"),
+  includeMessages: z.boolean().optional().default(false).describe("Include per-message details in each thread"),
+  subjectFallback: z.boolean().optional().default(true).describe("Group header-less messages (e.g. bounces) by normalized subject"),
+});
+
+export const ListAllAccountThreadsInput = z.object({
+  folders: z.array(z.string()).optional().default(["INBOX", "SENT"]).describe("Folders to scan. 'SENT' auto-resolves the Sent folder."),
+  limit: z.number().optional().default(500).describe("Max messages to scan per folder (most recent first)"),
+  includeMessages: z.boolean().optional().default(false).describe("Include per-message details in each thread"),
+  subjectFallback: z.boolean().optional().default(true).describe("Group header-less messages (e.g. bounces) by normalized subject"),
 });
 
 export const GetEmailAccountAnalyticsInput = z.object({

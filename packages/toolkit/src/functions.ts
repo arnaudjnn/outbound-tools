@@ -1,7 +1,7 @@
 import { listMailboxes, getMailboxByEmail, getMailboxById } from "./mailpool.js";
 import {
   fetchEmails, fetchSentEmails, appendToSent, setEmailFlag, removeEmailFlag,
-  matchRepliesToSent, filterByTagExpression, resolveFolder, countByKeyword,
+  listAllThreads, filterByTagExpression, resolveFolder, countByKeyword,
   addAudienceSegments, removeAudienceSegments,
   fetchEmailByUid, fetchEmailRawByUid, deleteEmail, getEmailHeaders,
   fetchDrafts, saveDraft, deleteDraft, fetchAttachmentByUid,
@@ -12,8 +12,8 @@ import {
 import { sendEmail, composeDraft } from "./smtp.js";
 import type { z } from "zod";
 import type {
-  ListEmailAccountsInput, ListReceivedEmailsInput, SendEmailInput,
-  ListSentEmailsInput, ListThreadsInput, GetEmailAccountAnalyticsInput,
+  ListReceivedEmailsInput, SendEmailInput,
+  ListSentEmailsInput, ListThreadsInput, ListAllAccountThreadsInput, GetEmailAccountAnalyticsInput,
   AddEmailTagInput, RemoveEmailTagInput, AddToAudienceInput,
   RemoveFromAudienceInput, GetEmailInput, GetEmailRawInput,
   ReplyToEmailInput, ReplyAllToEmailInput, ForwardEmailInput,
@@ -96,56 +96,89 @@ export async function list_sent_emails(params: z.infer<typeof ListSentEmailsInpu
   return result;
 }
 
+// Lists all conversation threads for a single account using header-based
+// threading (RFC References / In-Reply-To), scanning INBOX + Sent by default.
 export async function list_threads(params: z.infer<typeof ListThreadsInput>) {
-  const { email, receivedLimit, sentLimit, unclassifiedOnly } = params;
+  const { email, folders, limit, includeMessages, subjectFallback } = params;
   const mailbox = await getMailboxByEmail(email);
+  const result = await listAllThreads(mailbox, { folders, limit, includeMessages, subjectFallback });
+  return { account: email, ...result };
+}
 
-  const receivedPage = await fetchEmails(mailbox, "INBOX", receivedLimit);
-  const filtered = unclassifiedOnly
-    ? receivedPage.emails.filter((e) => !e.flags.includes("classified"))
-    : receivedPage.emails;
+// Lists conversation threads across every registered mailbox and aggregates.
+export async function list_all_account_threads(params: z.infer<typeof ListAllAccountThreadsInput>) {
+  const { folders, limit, includeMessages, subjectFallback } = params;
+  const opts = { folders, limit, includeMessages, subjectFallback };
 
-  if (filtered.length === 0) {
-    return { matches: [], unmatchedUids: [], totalChecked: 0 };
+  const mailboxes = await listMailboxes();
+  const accounts: Array<Record<string, unknown>> = [];
+  let threadCount = 0;
+  let messagesScanned = 0;
+
+  for (const m of mailboxes) {
+    try {
+      const mailbox = await getMailboxById(m.id);
+      const result = await listAllThreads(mailbox, opts);
+      accounts.push({ account: m.email, ...result });
+      threadCount += result.threadCount;
+      messagesScanned += result.messagesScanned;
+    } catch (err) {
+      accounts.push({
+        account: m.email,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
-  const sentPage = await fetchSentEmails(mailbox, sentLimit);
-  const result = matchRepliesToSent(filtered, sentPage.emails);
-
-  return { ...result, totalChecked: filtered.length };
+  return {
+    accountCount: accounts.length,
+    messagesScanned,
+    threadCount,
+    accounts,
+  };
 }
 
 export async function get_email_account_analytics(params: z.infer<typeof GetEmailAccountAnalyticsInput>) {
   const { email } = params;
   const mailbox = await getMailboxByEmail(email);
 
-  const sentPage = await fetchSentEmails(mailbox, 1);
-  const totalSent = sentPage.total;
-
-  if (totalSent === 0) {
-    return { totalSent: 0, statuses: {}, rates: {} };
-  }
-
-  const sentFolder = await resolveFolder(mailbox, "SENT");
   const statusTags = [
     "interested", "meeting_request", "information_request",
     "not_interested", "wrong_person", "do_not_contact",
     "out_of_office", "unsubscribed", "bounced",
   ];
+  // Rates are "unknown" (not 0%) when there is nothing to measure: no sent
+  // emails, or no replies classified yet. Classification only sets status tags
+  // when ANTHROPIC_API_KEY is set (auto endpoint) or via the classify-replies
+  // skill — so an unclassified mailbox reports "unknown", not a misleading 0%.
+  const unknownRates = Object.fromEntries(statusTags.map((t) => [t, "unknown"]));
+  const zeroStatuses = Object.fromEntries(statusTags.map((t) => [t, 0]));
+
+  const sentPage = await fetchSentEmails(mailbox, 1);
+  const totalSent = sentPage.total;
+
+  if (totalSent === 0) {
+    return { totalSent: 0, totalReplied: 0, replyRate: "unknown", statuses: zeroStatuses, rates: unknownRates };
+  }
+
+  const sentFolder = await resolveFolder(mailbox, "SENT");
   const counts = await Promise.all(
     statusTags.map((tag) => countByKeyword(mailbox, sentFolder, tag))
   );
 
   const statuses: Record<string, number> = {};
-  const rates: Record<string, number> = {};
-  const rate = (count: number) => Math.round((count / totalSent) * 10000) / 100;
-
-  for (let i = 0; i < statusTags.length; i++) {
-    statuses[statusTags[i]] = counts[i];
-    rates[statusTags[i]] = rate(counts[i]);
-  }
+  for (let i = 0; i < statusTags.length; i++) statuses[statusTags[i]] = counts[i];
 
   const totalReplied = counts.reduce((sum, c) => sum + c, 0);
+
+  // No classified replies yet -> rates are unmeasured rather than 0%.
+  if (totalReplied === 0) {
+    return { totalSent, totalReplied: 0, replyRate: "unknown", statuses, rates: unknownRates };
+  }
+
+  const rate = (count: number) => Math.round((count / totalSent) * 10000) / 100;
+  const rates: Record<string, number> = {};
+  for (let i = 0; i < statusTags.length; i++) rates[statusTags[i]] = rate(counts[i]);
 
   return {
     totalSent,
@@ -588,7 +621,10 @@ export async function get_campaign_analytics(params: z.infer<typeof GetCampaignA
 
   const totalSent = campaignSent.length;
   const totalReplied = Object.values(statusCounts).reduce((sum, c) => sum + c, 0);
-  const rate = (count: number) => Math.round((count / totalSent) * 10000) / 100;
+  // "unknown" rather than 0% when nothing has been sent or classified yet.
+  const measurable = totalSent > 0 && totalReplied > 0;
+  const rate = (count: number): number | string =>
+    measurable ? Math.round((count / totalSent) * 10000) / 100 : "unknown";
 
   return {
     campaign,
@@ -841,6 +877,7 @@ export const functionMap: Record<string, (params: any) => Promise<any>> = {
   send_email,
   list_sent_emails,
   list_threads,
+  list_all_account_threads,
   get_email_account_analytics,
   add_email_tag,
   remove_email_tag,

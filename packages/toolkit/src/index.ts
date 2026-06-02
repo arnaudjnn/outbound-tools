@@ -14,7 +14,7 @@ export { listMailboxes, getMailboxById, getMailboxByEmail } from "./mailpool.js"
 // IMAP
 export {
   normalizeSubject, extractEmail,
-  matchRepliesToSent, filterByTagExpression,
+  listAllThreads, filterByTagExpression,
   findSentFolder, resolveFolder, listFolders,
   fetchEmails, fetchSentEmails, appendToSent,
   setEmailFlag, removeEmailFlag, countByKeyword,
@@ -29,7 +29,8 @@ export {
   saveCampaignConfig, loadCampaignConfig, listCampaignConfigs, deleteCampaignConfig,
 } from "./imap.js";
 export type {
-  ThreadMatch, EmailMessage, EmailAttachmentMeta, EmailDetail,
+  ThreadMessage, ThreadSummary, ListAllThreadsResult,
+  EmailMessage, EmailAttachmentMeta, EmailDetail,
   EmailHeaders, EmailPage, AudienceSegment, ContactMetadata,
   CampaignVariant, CampaignStep, CampaignConfig,
 } from "./imap.js";
@@ -44,6 +45,7 @@ export {
   SendEmailInput,
   ListSentEmailsInput,
   ListThreadsInput,
+  ListAllAccountThreadsInput,
   GetEmailAccountAnalyticsInput,
   AddEmailTagInput,
   RemoveEmailTagInput,
@@ -85,6 +87,7 @@ export {
   send_email,
   list_sent_emails,
   list_threads,
+  list_all_account_threads,
   get_email_account_analytics,
   add_email_tag,
   remove_email_tag,

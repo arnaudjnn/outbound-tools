@@ -116,12 +116,12 @@ Replies need to be classified so `start_campaign` knows when to stop sending (te
 
 **Option A: Automatic (recommended)**
 
-Set `ANTHROPIC_API_KEY` as an environment variable. The server exposes `GET /api/classify` which uses Claude Haiku to classify every unprocessed reply. Schedule it daily alongside `start_campaign`.
+Set `ANTHROPIC_API_KEY` as an environment variable. The server exposes `POST /api/v0/classify` which uses Claude Haiku to classify every unprocessed reply. Schedule it daily alongside `start_campaign`.
 
 How it works:
-1. Calls `list_threads` to match incoming replies to sent emails by subject and sender
+1. Lists unprocessed replies, then calls `list_threads` (header-based threading via `References`/`In-Reply-To`) to pair each reply with its original sent email
 2. Sends each reply to Claude Haiku for classification into one of 9 statuses
-3. Tags both the reply (INBOX) and the original sent email (SENT) with the status + `classified`
+3. Tags both the reply (INBOX) and, when the sent original is paired, the sent email (SENT) with the status + `classified`
 4. Next time `start_campaign` runs, it sees the tagged status and skips contacts with terminal statuses
 
 **Option B: Manual / agent-driven**
@@ -171,6 +171,8 @@ Returns:
 - **Reply rate** — % of sent emails that got a classified reply
 - **Positive reply rate** — `interested` + `meeting_request` + `information_request` as % of sent
 - **Conversion rate** — `meeting_request` as % of sent (meetings booked)
+
+> Rates are reported as `"unknown"` (not `0`) when there is nothing to measure — no sent emails, or no replies classified yet. Since status tags are only written by the classifier (the `ANTHROPIC_API_KEY` endpoint or the `/classify-replies` skill), an unclassified mailbox reads `"unknown"` rather than a misleading `0%`.
 - **Per-step performance** — see which step generates the most replies
 - **A/B comparison** — compare variants by reply count and status breakdown to pick the winner
 
@@ -283,7 +285,8 @@ campaign_q1_launch AND step_1           -- first step of a campaign
 
 | Tool | Description |
 |---|---|
-| `list_threads` | Match received replies to sent emails by subject + sender |
+| `list_threads` | List all conversation threads for one account via RFC `References`/`In-Reply-To` headers (true threading) |
+| `list_all_account_threads` | Same header-based threading aggregated across every registered account |
 | `get_thread` | Get all messages in a conversation thread by subject |
 
 ### Drafts
@@ -324,5 +327,5 @@ campaign_q1_launch AND step_1           -- first step of a campaign
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `MAILPOOL_API_KEY` | Yes | Your Mailpool API key for email account access |
-| `API_KEY` | Yes | Secures the MCP server and `/api/classify` endpoint. Auto-generated on Railway via `${{secret()}}`. Pass as `Authorization: Bearer <key>` header or `?api_key=<key>` query param. |
-| `ANTHROPIC_API_KEY` | No | Enables auto-classification via `GET /api/classify`. Only needed if you want the server to classify replies automatically. Without it, use the `/classify-replies` agent skill instead. |
+| `API_KEY` | Yes | Secures the MCP server and `/api/v0/classify` endpoint. Auto-generated on Railway via `${{secret()}}`. Pass as `Authorization: Bearer <key>` header or `?api_key=<key>` query param. |
+| `ANTHROPIC_API_KEY` | No | Enables auto-classification via `POST /api/v0/classify`. Only needed if you want the server to classify replies automatically. Without it, use the `/classify-replies` agent skill instead. |

@@ -13,59 +13,274 @@ export function extractEmail(from: string): string {
   return (match ? match[1] : from).trim().toLowerCase();
 }
 
-export interface ThreadMatch {
-  receivedUid: number;
-  receivedSubject: string;
-  receivedFrom: string;
-  receivedDate: string;
-  receivedPreview: string;
-  sentUid: number;
-  sentSubject: string;
-  sentTo: string;
-  sentDate: string;
-  sentPreview: string;
+// --- Real header-based thread grouping (Message-ID / In-Reply-To / References) ---
+//
+// Unlike get_thread (which groups purely by normalized
+// subject), this walks the RFC 5322 References / In-Reply-To chains so that
+// replies are linked to their originals even when subjects differ or repeat.
+// Subject grouping is used only as a fallback for messages that carry no
+// threading headers at all (e.g. some bounces / auto-replies).
+
+export interface ThreadMessage {
+  uid: number;
+  folder: string;
+  messageId: string;
+  subject: string;
+  from: string;
+  to: string;
+  date: string;
+  flags: string[];
 }
 
-// Matches received INBOX emails to sent emails by normalized subject + sender was a recipient.
-// Returns matches for emails that are replies to sent emails, and a list of unmatched UIDs.
-export function matchRepliesToSent(
-  received: EmailMessage[],
-  sent: EmailMessage[]
-): { matches: ThreadMatch[]; unmatchedUids: number[] } {
-  const matches: ThreadMatch[] = [];
-  const unmatchedUids: number[] = [];
+export interface ThreadSummary {
+  threadId: string; // union-find root key for the thread
+  subject: string; // normalized subject of the thread
+  messageCount: number;
+  participants: string[]; // unique email addresses across from/to
+  firstDate: string;
+  lastDate: string;
+  folders: string[]; // folders the thread's messages span
+  messages?: ThreadMessage[]; // populated only when includeMessages=true
+}
 
-  for (const rx of received) {
-    const rxSubject = normalizeSubject(rx.subject);
-    const senderEmail = extractEmail(rx.from);
+export interface ListAllThreadsResult {
+  messagesScanned: number;
+  foldersScanned: string[];
+  truncated: boolean; // true if any folder had more messages than the scan limit
+  threadCount: number;
+  threads: ThreadSummary[];
+}
 
-    const sentMatch = sent.find((s) => {
-      const sentSubject = normalizeSubject(s.subject);
-      if (rxSubject !== sentSubject) return false;
-      // Check if the sender of the reply was a recipient of the sent email
-      const sentTo = s.to.toLowerCase();
-      return sentTo.includes(senderEmail);
-    });
+class UnionFind {
+  private parent = new Map<string, string>();
 
-    if (sentMatch) {
-      matches.push({
-        receivedUid: rx.uid,
-        receivedSubject: rx.subject,
-        receivedFrom: rx.from,
-        receivedDate: rx.date,
-        receivedPreview: rx.preview,
-        sentUid: sentMatch.uid,
-        sentSubject: sentMatch.subject,
-        sentTo: sentMatch.to,
-        sentDate: sentMatch.date,
-        sentPreview: sentMatch.preview,
-      });
-    } else {
-      unmatchedUids.push(rx.uid);
+  find(x: string): string {
+    let p = this.parent.get(x);
+    if (p === undefined) {
+      this.parent.set(x, x);
+      return x;
+    }
+    if (p !== x) {
+      p = this.find(p);
+      this.parent.set(x, p);
+    }
+    return p;
+  }
+
+  union(a: string, b: string): void {
+    const ra = this.find(a);
+    const rb = this.find(b);
+    if (ra !== rb) this.parent.set(ra, rb);
+  }
+}
+
+// Extracts all <...> message-id tokens from References / In-Reply-To headers.
+function parseReferenceIds(headerText: string): string[] {
+  if (!headerText) return [];
+  // Unfold folded header continuation lines (leading whitespace).
+  const unfolded = headerText.replace(/\r?\n[ \t]+/g, " ");
+  const ids = new Set<string>();
+  for (const line of unfolded.split(/\r?\n/)) {
+    if (/^(references|in-reply-to):/i.test(line)) {
+      const matches = line.match(/<[^>]+>/g);
+      if (matches) for (const m of matches) ids.add(m.trim());
+    }
+  }
+  return [...ids];
+}
+
+function addressesToText(
+  addrs?: Array<{ name?: string; address?: string }>
+): string {
+  if (!addrs || addrs.length === 0) return "";
+  return addrs
+    .map((a) => (a.name ? `${a.name} <${a.address}>` : a.address || ""))
+    .filter(Boolean)
+    .join(", ");
+}
+
+function addressesToEmails(
+  addrs?: Array<{ address?: string }>
+): string[] {
+  if (!addrs) return [];
+  return addrs
+    .map((a) => a.address?.toLowerCase())
+    .filter((a): a is string => Boolean(a));
+}
+
+interface RawThreadMsg extends ThreadMessage {
+  refs: string[];
+  participants: string[];
+}
+
+// Lists all conversation threads in a mailbox by walking RFC threading headers,
+// scanning the given folders (default INBOX + Sent). Reads envelopes + threading
+// headers only (no message bodies), so it stays fast on large inboxes.
+export async function listAllThreads(
+  mailbox: MailboxDetails,
+  opts: {
+    folders?: string[];
+    limit?: number;
+    includeMessages?: boolean;
+    subjectFallback?: boolean;
+  } = {}
+): Promise<ListAllThreadsResult> {
+  const {
+    folders = ["INBOX", "SENT"],
+    limit = 500,
+    includeMessages = false,
+    subjectFallback = true,
+  } = opts;
+
+  const client = createImapClient(mailbox);
+  const raw: RawThreadMsg[] = [];
+  const foldersScanned: string[] = [];
+  let messagesScanned = 0;
+  let truncated = false;
+
+  try {
+    await client.connect();
+    for (const folder of folders) {
+      const resolved =
+        folder.toUpperCase() === "SENT"
+          ? await findSentFolder(client, mailbox.imapHost)
+          : folder;
+      const lock = await client.getMailboxLock(resolved);
+      try {
+        foldersScanned.push(resolved);
+        const mb = client.mailbox;
+        const total = mb && typeof mb === "object" ? mb.exists : 0;
+        if (total === 0) continue;
+        if (total > limit) truncated = true;
+
+        // Scan the most recent `limit` messages in the folder.
+        const end = total;
+        const start = Math.max(1, end - limit + 1);
+
+        for await (const msg of client.fetch(`${start}:${end}`, {
+          uid: true,
+          flags: true,
+          envelope: true,
+          headers: ["references", "in-reply-to"],
+        })) {
+          messagesScanned++;
+          const env = msg.envelope;
+          const headerText = msg.headers ? msg.headers.toString() : "";
+          const refs = parseReferenceIds(headerText);
+          // envelope.inReplyTo is a redundant safety net for the header parse.
+          if (env?.inReplyTo) {
+            const m = env.inReplyTo.match(/<[^>]+>/g);
+            if (m) for (const id of m) if (!refs.includes(id)) refs.push(id);
+          }
+          const messageId = env?.messageId || `__uid_${resolved}_${msg.uid}`;
+          raw.push({
+            uid: msg.uid,
+            folder: resolved,
+            messageId,
+            subject: env?.subject || "(no subject)",
+            from: addressesToText(env?.from),
+            to: addressesToText(env?.to),
+            date: env?.date ? new Date(env.date).toISOString() : "",
+            flags: Array.from(msg.flags || []),
+            refs,
+            participants: [
+              ...addressesToEmails(env?.from),
+              ...addressesToEmails(env?.to),
+            ],
+          });
+        }
+      } finally {
+        lock.release();
+      }
+    }
+  } finally {
+    await client.logout();
+  }
+
+  // Build thread groups via union-find over message-id / references edges.
+  const uf = new UnionFind();
+  for (const m of raw) {
+    uf.find(m.messageId);
+    for (const r of m.refs) uf.union(m.messageId, r);
+  }
+  // Subject fallback: only for messages with NO threading headers, so we don't
+  // over-merge genuinely distinct header-threaded conversations.
+  if (subjectFallback) {
+    for (const m of raw) {
+      if (m.refs.length === 0) {
+        const norm = normalizeSubject(m.subject);
+        if (norm) uf.union(m.messageId, `__subj_${norm}`);
+      }
     }
   }
 
-  return { matches, unmatchedUids };
+  const groups = new Map<string, RawThreadMsg[]>();
+  for (const m of raw) {
+    const root = uf.find(m.messageId);
+    let g = groups.get(root);
+    if (!g) {
+      g = [];
+      groups.set(root, g);
+    }
+    g.push(m);
+  }
+
+  const byDateAsc = (a: RawThreadMsg, b: RawThreadMsg) => {
+    const ta = a.date ? new Date(a.date).getTime() : Infinity;
+    const tb = b.date ? new Date(b.date).getTime() : Infinity;
+    return ta - tb;
+  };
+
+  const threads: ThreadSummary[] = [];
+  for (const [root, msgs] of groups) {
+    msgs.sort(byDateAsc);
+    const participants = [...new Set(msgs.flatMap((m) => m.participants))];
+    const folderSet = [...new Set(msgs.map((m) => m.folder))];
+    const dated = msgs.filter((m) => m.date);
+    const firstDate = dated[0]?.date || "";
+    const lastDate = dated[dated.length - 1]?.date || "";
+    // Thread subject: earliest message's normalized subject, else first non-empty.
+    const subjectSource =
+      msgs.find((m) => m.subject && m.subject !== "(no subject)") || msgs[0];
+    threads.push({
+      threadId: root,
+      subject: normalizeSubject(subjectSource.subject) || "(no subject)",
+      messageCount: msgs.length,
+      participants,
+      firstDate,
+      lastDate,
+      folders: folderSet,
+      ...(includeMessages
+        ? {
+            messages: msgs.map((m) => ({
+              uid: m.uid,
+              folder: m.folder,
+              messageId: m.messageId,
+              subject: m.subject,
+              from: m.from,
+              to: m.to,
+              date: m.date,
+              flags: m.flags,
+            })),
+          }
+        : {}),
+    });
+  }
+
+  // Most recently active threads first.
+  threads.sort((a, b) => {
+    const ta = a.lastDate ? new Date(a.lastDate).getTime() : 0;
+    const tb = b.lastDate ? new Date(b.lastDate).getTime() : 0;
+    return tb - ta;
+  });
+
+  return {
+    messagesScanned,
+    foldersScanned,
+    truncated,
+    threadCount: threads.length,
+    threads,
+  };
 }
 
 function createImapClient(mailbox: MailboxDetails): ImapFlow {
