@@ -7,7 +7,7 @@ of an Outbound Tools server (`POST /api/v0/{tool}`).
 
 | Field | Required | Description |
 |---|---|---|
-| `api_url` | yes | API base URL **including** `/api/v0`, e.g. `https://your-app.up.railway.app/api/v0` |
+| `api_url` | yes | Bare server URL (no path, no trailing slash), e.g. `https://your-app.up.railway.app`. The `/api/v0` prefix is added automatically |
 | `api_key` | yes | The server's `API_KEY`, sent as `Authorization: Bearer <key>` |
 
 ## Streams

@@ -9,8 +9,8 @@ type: DeclarativeSource
 # of `accounts`, so a single sync fans out across every registered mailbox and
 # stamps each record with its owning `account`.
 #
-# `api_url` must include the API base path, e.g.
-#   https://your-app.up.railway.app/api/v0
+# `api_url` is the bare server URL (no path); the `/api/v0` prefix is added
+# automatically, e.g. https://your-app.up.railway.app
 #
 # Item-lookup endpoints that require a uid/subject/campaign (get_email,
 # get_email_raw, get_thread, get_attachment, get_draft, get_campaign,
@@ -26,7 +26,7 @@ definitions:
 
   base_requester:
     type: HttpRequester
-    url_base: "{{ config['api_url'] }}"
+    url_base: "{{ config['api_url'] }}/api/v0"
     http_method: POST
     authenticator:
       $ref: "#/definitions/bearer_authenticator"
@@ -418,10 +418,10 @@ spec:
     properties:
       api_url:
         type: string
-        title: API base URL
-        description: Base URL including the API path, e.g. https://your-app.up.railway.app/api/v0
+        title: Server URL
+        description: Base server URL, no path and no trailing slash. The `/api/v0` prefix is added automatically.
         examples:
-          - https://your-app.up.railway.app/api/v0
+          - https://your-app.up.railway.app
         order: 0
       api_key:
         type: string
