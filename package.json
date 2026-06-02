@@ -14,5 +14,9 @@
   "devDependencies": {
     "@types/node": "^22.13.0",
     "typescript": "^5.7.3"
+  },
+  "pnpm": {
+    "//": "esbuild (via tsx) ships a prebuilt binary and is not used in the Docker image (build uses tsc, runtime runs prod deps). Mark its build script as intentionally skipped so pnpm v10/v11 don't error on it.",
+    "ignoredBuiltDependencies": ["esbuild"]
   }
 }
