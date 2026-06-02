@@ -377,7 +377,7 @@ definitions:
           type: RecordSelector
           extractor:
             type: DpathExtractor
-            field_path: []
+            field_path: ["statuses"]
       schema_loader:
         type: InlineSchemaLoader
         schema:
