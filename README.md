@@ -4,6 +4,21 @@
 
 Open-source MCP server for email outreach campaigns. Create multi-step sequences with A/B variants, auto-classify replies with AI, and track conversion rates — all powered by IMAP keywords with zero external database.
 
+## Structure
+
+```
+outbound-tools/
+└── packages/
+    ├── api/                  Express + MCP server — the deployable (Railway,
+    │                         via the root Dockerfile)
+    ├── toolkit/              Shared library — IMAP/SMTP email ops, Mailpool
+    │                         client, zod schemas, tool definitions + functionMap
+    └── cli/                  Commander.js CLI — wraps the same toolkit
+                              functions for the terminal (not deployed)
+```
+
+`packages/toolkit` holds all business logic; `api` and `cli` are thin adapters over it, consuming it via `workspace:*`. Build order matters (`pnpm build` handles it): toolkit compiles first so its `dist/` declarations exist before the consumers typecheck.
+
 ## Get Started
 
 1. Get a `MAILPOOL_API_KEY` from [Mailpool](https://mailpool.io) and connect at least one email account
